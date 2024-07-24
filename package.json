@@ -1,5 +1,5 @@
 {
-  "name": "haraka-plugin-template",
+  "name": "haraka-plugin-duotail",
   "version": "1.0.7",
   "description": "Haraka plugin that...CHANGE THIS",
   "main": "index.js",
@@ -19,18 +19,18 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/haraka/haraka-plugin-template.git"
+    "url": "git+https://github.com/haraka/haraka-plugin-duotail.git"
   },
   "keywords": [
     "haraka-plugin",
-    "template"
+    "duotail"
   ],
   "author": "Welcome Member <happy-haraka-hacker@example.com>",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/haraka/haraka-plugin-template/issues"
+    "url": "https://github.com/haraka/haraka-plugin-duotail/issues"
   },
-  "homepage": "https://github.com/haraka/haraka-plugin-template#readme",
+  "homepage": "https://github.com/haraka/haraka-plugin-duotail#readme",
   "devDependencies": {
     "@haraka/eslint-config": "1.1.3",
     "haraka-test-fixtures": "1.3.5"

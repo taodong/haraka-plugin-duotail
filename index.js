@@ -1,15 +1,15 @@
 'use strict'
 
 exports.register = function () {
-  this.load_template_ini()
+  this.load_duotail_ini()
 
   // register hooks here. More info at https://haraka.github.io/core/Plugins/
   // this.register_hook('data_post', 'do_stuff_with_message')
 }
 
-exports.load_template_ini = function () {
+exports.load_duotail_ini = function () {
   this.cfg = this.config.get(
-    'template.ini',
+    'duotail.ini',
     {
       booleans: [
         '+enabled', // this.cfg.main.enabled=true
@@ -18,7 +18,7 @@ exports.load_template_ini = function () {
       ],
     },
     () => {
-      this.load_template_ini()
+      this.load_duotail_ini()
     },
   )
 }
