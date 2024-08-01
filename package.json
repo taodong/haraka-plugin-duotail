@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "jslint": "^0.12.1",
-    "kafkajs": "^2.2.4"
+    "kafkajs": "^2.2.4",
+    "mocha": "^10.7.0"
   }
 }

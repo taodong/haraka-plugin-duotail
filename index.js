@@ -1,7 +1,7 @@
 'use strict'
 
 
-const { Kafka } = require('kafkajs');
+const { Kafka, logLevel } = require('kafkajs');
 
 exports.register = function () {
   this.load_duotail_ini();
@@ -20,17 +20,50 @@ exports.cache_message_queue_skeleton = function (next, connection) {
     const remoteHost = remote.host;
     const heloHost = hello?.host;
     const subject = transaction.header.get_all('Subject').length > 0 ? transaction.header.get('Subject') : null;
+    const emailId = this.generateId();
 
-    const messageSkeleton = {
+    const kMessageBody = {
+      emailId,
       mailFrom,
       rcptTo,
       remoteIp,
       remoteHost,
       heloHost,
       subject,
-    };
+    }
 
-    connection.loginfo(this, 'message skeleton: ', messageSkeleton);
+    const kMessage = {
+      key: emailId,
+      value: JSON.stringify(kMessageBody),
+      headers: {
+        'message-version': this.cfg.main.messageVersion,
+        'correlation-id': emailId,
+        'haraka-ip': connection.local.ip,
+        'haraka-host': connection.local.host,
+        '__TypeId__': Buffer.from('com.duotail.collector.common.model.MessageSummary')
+      }
+    }
+
+    const topic = this.cfg.main.topic;
+
+    const sendMessage = () => {
+      return this.kafkaProducer
+        .send({
+          topic,
+          messages: [kMessage],
+        })
+        .then(console.log)
+        .catch(e => console.error(`[kafka/sendMessage] ${e.message}`, e))
+    }
+
+    const run = async () => {
+      await sendMessage();
+    }
+
+    run().catch(e => connection.logerror(`[kafka/sendMessage] ${e.message}`, e))
+
+
+    connection.loginfo(this, 'Sent Kafka message: ', kMessage);
 
   } else {
     connection.logdebug(this, 'duotail is disabled through configuration')
@@ -40,56 +73,45 @@ exports.cache_message_queue_skeleton = function (next, connection) {
   next()
 }
 
-// kafkaProducer is an object to store Kafka producer configuration, which has get and set methods for properties: clientId, messageVersion, brokers, topic, producerTimeout and connectionTimeout.
-// Default values of properties are: clientId = 'duotail', producerTimeout = 30000 ms, connectionTimeout = 30000 ms, messageVersion = 0.0.1.
-// validate function is used to validate the configuration of Kafka producer.
-exports.kafkaProducer = {
-  get clientId() {
-    return this._clientId || 'duotail';
-  },
-  set clientId(value) {
-    this._clientId = value;
-  },
-  get brokers() {
-    return this._brokers || ['localhost:9092'];
-  },
-  set brokers(value) {
-    this._brokers = value;
-  },
-  get topic() {
-    return this._topic || 'duotail';
-  },
-  set topic(value) {
-    this._topic = value;
-  },
-  get producerTimeout() {
-    return this._producerTimeout || 30000;
-  },
-  set producerTimeout(value) {
-    this._producerTimeout = parseInt(value) || 30000;
-  },
-  get connectionTimeout() {
-    return this._connectionTimeout || 30000;
-  },
-  set connectionTimeout(value) {
-    this._connectionTimeout = parseInt(value) || 30000;
-  },
-  get messageVersion() {
-    return this._messageVersion || '0.0.1';
-  },
-  set messageVersion(value) {
-    this._messageVersion = value;
-  }
-};
+exports.shutdown = function() {
+  if (this.cfg.main.enabled) {
+    const disconnectProducer = async () => {
+    await this.kafkaProducer.disconnect();
+    }
 
-exports.validate = function (kafkaProducer) {
+    disconnectProducer().catch(e => console.error(`[kafka/disconnect] ${e.message}`, e))
+  }
+}
 
-  if (kafkaProducer.brokers || this.brokers.length === 0) {
-    throw new Error('Kafka producer brokers are required');
+
+exports.validateKafka = function () {
+  if (this.cfg.main.enabled) {
+    if (!this.cfg.main.brokers || this.cfg.main.brokers.length === 0) {
+      this.failConfiguration('Kafka producer brokers are required');
+    }
+    if (!this.cfg.main.topic || this.cfg.main.topic.length === 0) {
+      this.failConfiguration('Kafka producer topic is required');
+    }
+
+    if (!this.cfg.main.messageVersion || this.cfg.main.messageVersion.length === 0) {
+      this.failConfiguration('Kafka producer messageVersion is required');
+    }
   }
-  if (kafkaProducer.topic) {
-    throw new Error('Kafka producer topic is required');
+}
+
+exports.failConfiguration = function (message) {
+  this.cfg.main.enabled = false;
+  throw new Error(message);
+}
+
+exports.generateId = function () {
+  let id = '' + Date.now() + '-';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < 15; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
   }
+
+  return id;
 }
 
 exports.load_duotail_ini = function () {
@@ -103,5 +125,45 @@ exports.load_duotail_ini = function () {
     () => {
       this.load_duotail_ini()
     },
-  )
+  );
+
+  console.log('config: ' + JSON.stringify(this.cfg))
+
+  if (!this.cfg.main.clientId) {
+    this.cfg.main.clientId = 'haraka'
+  }
+
+  if (!Number.isInteger(this.cfg.main.producerTimeout)) {
+    this.cfg.main.producerTimeout = 30000;
+  }
+
+  if (!Number.isInteger(this.cfg.main.connectionTimeout)) {
+    this.cfg.main.connectionTimeout = 30000;
+  }
+
+  this.validateKafka();
+
+  // initialize kafka producer
+  if (this.cfg.main.enabled) {
+
+    const kafka = new Kafka({
+      clientId: this.cfg.main.clientId,
+      brokers: this.cfg.main.brokers.split(','),
+      connectionTimeout: this.cfg.main.connectionTimeout,
+      requestTimeout: this.cfg.main.producerTimeout,
+      logLevel: logLevel.WARN,
+    });
+
+    this.kafkaProducer = kafka.producer({
+      allowAutoTopicCreation: false,
+    });
+
+    const connectProducer = async () => {
+      await this.kafkaProducer.connect()
+    }
+
+    connectProducer().catch(e => console.error(`[kafka/connect] ${e.message}`, e))
+
+  }
+
 }
