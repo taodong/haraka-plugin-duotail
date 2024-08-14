@@ -2,17 +2,23 @@
 
 
 const { Kafka, logLevel } = require('kafkajs');
+const { Client } = require('hazelcast-client');
 
 exports.register = function () {
-  this.load_duotail_ini();
+  const plugin = this;
+
+  plugin.load_duotail_ini();
 
   // register hooks here. More info at https://haraka.github.io/core/Plugins/
-  this.register_hook('queue', 'cache_message_queue_skeleton');
+  plugin.register_hook('queue', 'cache_and_save');
 }
 
-exports.cache_message_queue_skeleton = function (next, connection) {
+exports.cache_and_save = function (next, connection) {
+  const plugin = this;
 
-  if (this.cfg.main.enabled) {
+  if (!connection?.transaction) return next();
+
+  if (plugin.cfg.main.enabled) {
     const { transaction, remote, hello } = connection;
     const mailFrom = transaction.mail_from;
     const rcptTo = transaction.rcpt_to;
@@ -20,7 +26,7 @@ exports.cache_message_queue_skeleton = function (next, connection) {
     const remoteHost = remote.host;
     const heloHost = hello?.host;
     const subject = transaction.header.get_all('Subject').length > 0 ? transaction.header.get('Subject') : null;
-    const emailId = this.generateId();
+    const emailId = plugin.generateId();
 
     const kMessageBody = {
       emailId,
@@ -36,24 +42,29 @@ exports.cache_message_queue_skeleton = function (next, connection) {
       key: emailId,
       value: JSON.stringify(kMessageBody),
       headers: {
-        'message-version': this.cfg.main.messageVersion,
+        'message-version': plugin.cfg.kafka.messageVersion,
         'correlation-id': emailId,
         'haraka-ip': connection.local.ip,
         'haraka-host': connection.local.host,
-        '__TypeId__': Buffer.from('com.duotail.collector.common.model.MessageSummary')
+        '__TypeId__': plugin.cfg.kafka.messageType,
       }
     }
 
-    const topic = this.cfg.main.topic;
+    const topic = plugin.cfg.kafka.topic;
 
     const sendMessage = () => {
-      return this.kafkaProducer
+      return plugin.kafkaProducer
         .send({
           topic,
           messages: [kMessage],
         })
         .then(console.log)
         .catch(e => console.error(`[kafka/sendMessage] ${e.message}`, e))
+    }
+
+    const cacheEmail = async () => {
+      const map = await plugin.hzClient.getMap('emails');
+      await map.put(emailId, JSON.stringify(kMessageBody));
     }
 
     const run = async () => {
@@ -63,10 +74,10 @@ exports.cache_message_queue_skeleton = function (next, connection) {
     run().catch(e => connection.logerror(`[kafka/sendMessage] ${e.message}`, e))
 
 
-    connection.loginfo(this, 'Sent Kafka message: ', kMessage);
+    connection.loginfo(plugin, 'Sent Kafka message: ', kMessage);
 
   } else {
-    connection.logdebug(this, 'duotail is disabled through configuration')
+    connection.logdebug(plugin, 'duotail is disabled through configuration')
   }
 
 
@@ -74,33 +85,56 @@ exports.cache_message_queue_skeleton = function (next, connection) {
 }
 
 exports.shutdown = function() {
-  if (this.cfg.main.enabled) {
+  const plugin = this;
+
+  if (plugin.cfg.main.enabled) {
     const disconnectProducer = async () => {
-    await this.kafkaProducer.disconnect();
+      await plugin.kafkaProducer.disconnect();
     }
 
     disconnectProducer().catch(e => console.error(`[kafka/disconnect] ${e.message}`, e))
+
+    const disconnectHazelcast = async () => {
+      await plugin.hzClient.shutdown();
+    }
+
+    disconnectHazelcast().catch(e => console.error(`[hazelcast/disconnect] ${e.message}`, e))
   }
 }
 
 
 exports.validateKafka = function () {
-  if (this.cfg.main.enabled) {
-    if (!this.cfg.main.brokers || this.cfg.main.brokers.length === 0) {
-      this.failConfiguration('Kafka producer brokers are required');
+  const plugin = this;
+
+  if (plugin.cfg.main.enabled) {
+    if (!plugin.cfg.kafka.brokers || plugin.cfg.kafka.brokers.length === 0) {
+      plugin.failConfiguration('Kafka producer brokers are required');
     }
-    if (!this.cfg.main.topic || this.cfg.main.topic.length === 0) {
-      this.failConfiguration('Kafka producer topic is required');
+    if (!plugin.cfg.kafka.topic || plugin.cfg.kafka.topic.length === 0) {
+      plugin.failConfiguration('Kafka producer topic is required');
     }
 
-    if (!this.cfg.main.messageVersion || this.cfg.main.messageVersion.length === 0) {
-      this.failConfiguration('Kafka producer messageVersion is required');
+    if (!plugin.cfg.kafka.messageVersion || plugin.cfg.kafka.messageVersion.length === 0) {
+      plugin.failConfiguration('Kafka producer messageVersion is required');
+    }
+  }
+}
+
+exports.validateHazelcast = function () {
+  const plugin = this;
+  if (plugin.cfg.main.enabled) {
+    if (!plugin.cfg.hazelcast.clusterName || plugin.cfg.hazelcast.clusterName.length === 0) {
+      plugin.failConfiguration('Hazelcast cluster name is required');
+    }
+    if (!plugin.cfg.hazelcast.clusterMembers || plugin.cfg.hazelcast.clusterMembers.length === 0) {
+      plugin.failConfiguration('Hazelcast cluser members are required');
     }
   }
 }
 
 exports.failConfiguration = function (message) {
-  this.cfg.main.enabled = false;
+  const plugin = this;
+  plugin.cfg.main.enabled = false;
   throw new Error(message);
 }
 
@@ -115,7 +149,9 @@ exports.generateId = function () {
 }
 
 exports.load_duotail_ini = function () {
-  this.cfg = this.config.get(
+  const plugin = this;
+
+  plugin.cfg = plugin.config.get(
     'duotail.ini',
     {
       booleans: [
@@ -123,46 +159,69 @@ exports.load_duotail_ini = function () {
       ]
     },
     () => {
-      this.load_duotail_ini()
+      plugin.load_duotail_ini()
     },
   );
 
-  console.log('config: ' + JSON.stringify(this.cfg))
+  console.log('config: ' + JSON.stringify(plugin.cfg))
 
-  if (!this.cfg.main.clientId) {
-    this.cfg.main.clientId = 'haraka'
+  if (!plugin.cfg.kafka.clientId) {
+    plugin.cfg.kafka.clientId = 'haraka'
   }
 
-  if (!Number.isInteger(this.cfg.main.producerTimeout)) {
-    this.cfg.main.producerTimeout = 30000;
+  if (!Number.isInteger(plugin.cfg.kafka.producerTimeout)) {
+    plugin.cfg.kafka.producerTimeout = 30000;
   }
 
-  if (!Number.isInteger(this.cfg.main.connectionTimeout)) {
-    this.cfg.main.connectionTimeout = 30000;
+  if (!Number.isInteger(plugin.cfg.kafka.connectionTimeout)) {
+    plugin.cfg.kafka.connectionTimeout = 30000;
   }
 
-  this.validateKafka();
+  if (!plugin.cfg.kafka.messageType) {
+    plugin.cfg.kafka.messageType = 'com.duotail.collector.common.model.MessageSummary';
+  }
 
-  // initialize kafka producer
-  if (this.cfg.main.enabled) {
+  if (!plugin.cfg.hazelcast.cacheMapName) {
+    plugin.cfg.hazelcast.cacheMapName = 'original-email';
+  }
 
+  plugin.validateKafka();
+
+  plugin.validateHazelcast();
+
+  if (plugin.cfg.main.enabled) {
+    // initialize kafka producer
     const kafka = new Kafka({
-      clientId: this.cfg.main.clientId,
-      brokers: this.cfg.main.brokers.split(','),
-      connectionTimeout: this.cfg.main.connectionTimeout,
-      requestTimeout: this.cfg.main.producerTimeout,
+      clientId: plugin.cfg.kafka.clientId,
+      brokers: plugin.cfg.kafka.brokers.split(','),
+      connectionTimeout: plugin.cfg.kafka.connectionTimeout,
+      requestTimeout: plugin.cfg.kafka.producerTimeout,
       logLevel: logLevel.WARN,
     });
 
-    this.kafkaProducer = kafka.producer({
+    plugin.kafkaProducer = kafka.producer({
       allowAutoTopicCreation: false,
     });
 
     const connectProducer = async () => {
-      await this.kafkaProducer.connect()
+      await plugin.kafkaProducer.connect()
     }
 
     connectProducer().catch(e => console.error(`[kafka/connect] ${e.message}`, e))
+
+    // initialize hazelcast client
+    const hazelcastConfig = {
+      clusterName: plugin.cfg.hazelcast.clusterName,
+      network: {
+        clusterMembers: plugin.cfg.hazelcast.clusterMembers.split(','),
+      }
+    }
+
+    const connectHazelcast = async () => {
+      plugin.hzClient = await Client.newHazelcastClient(hazelcastConfig);
+    }
+
+    connectHazelcast().catch(e => console.error(`[hazelcast/connect] ${e.message}`, e))
 
   }
 
