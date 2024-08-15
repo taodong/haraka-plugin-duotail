@@ -1,8 +1,10 @@
 'use strict'
 
-
 const { Kafka, logLevel } = require('kafkajs');
 const { Client } = require('hazelcast-client');
+const { Writable } = require('stream');
+
+
 
 exports.register = function () {
   const plugin = this;
@@ -52,7 +54,7 @@ exports.cache_and_save = function (next, connection) {
 
     const topic = plugin.cfg.kafka.topic;
 
-    const sendMessage = () => {
+    const saveEmailSummary = () => {
       return plugin.kafkaProducer
         .send({
           topic,
@@ -63,18 +65,20 @@ exports.cache_and_save = function (next, connection) {
     }
 
     const cacheEmail = async () => {
-      const map = await plugin.hzClient.getMap('emails');
-      await map.put(emailId, JSON.stringify(kMessageBody));
+      const map = await plugin.hzClient.getMap(plugin.cfg.hazelcast.cacheMapName);
+      const cacheStream = plugin.createHazelcastStream(map, emailId);
+      transaction.message_stream.pipe(cacheStream, { line_endings: '\n' });
     }
 
     const run = async () => {
-      await sendMessage();
+      await saveEmailSummary();
+      await cacheEmail();
     }
 
-    run().catch(e => connection.logerror(`[kafka/sendMessage] ${e.message}`, e))
+    run().catch(e => connection.logerror(`[kafka||hazelcast] ${e.message}`, e))
 
 
-    connection.loginfo(plugin, 'Sent Kafka message: ', kMessage);
+    connection.loginfo(plugin, 'Processed email: ', kMessage);
 
   } else {
     connection.logdebug(plugin, 'duotail is disabled through configuration')
@@ -82,6 +86,33 @@ exports.cache_and_save = function (next, connection) {
 
 
   next()
+}
+
+exports.createHazelcastStream = function (map, key) {
+  class HazelcastWritableStream extends Writable {
+    constructor(map, key, options) {
+      super(options);
+      this.map = map;
+      this.key = key;
+      this.chunks = [];
+    }
+
+    _write(chunk, encoding, callback) {
+      this.chunks.push(chunk);
+      callback();
+    }
+
+    async _final(callback) {
+      try {
+        await this.map.put(this.key, Buffer.concat(this.chunks).toString());
+        callback();
+      } catch (e) {
+        callback(e);
+      }
+    }
+  }
+
+  return new HazelcastWritableStream(map, key);
 }
 
 exports.shutdown = function() {
