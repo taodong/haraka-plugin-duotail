@@ -27,8 +27,10 @@ exports.cache_and_save = function (next, connection) {
     const remoteIp = remote.ip;
     const remoteHost = remote.host;
     const heloHost = hello?.host;
-    const subject = transaction.header.get_all('Subject').length > 0 ? transaction.header.get('Subject') : null;
+    const subject = transaction.header.get_all('Subject').length > 0 ? transaction.header.get('Subject').replace(/\n+$/, '') : null;
     const emailId = plugin.generateId();
+    const fromHeader = transaction.header.get('From').replace(/\n+$/, '');
+    const senderName = fromHeader.replace(/<[^>]*>/g, "").trim();
 
     const kMessageBody = {
       emailId,
@@ -38,6 +40,7 @@ exports.cache_and_save = function (next, connection) {
       remoteHost,
       heloHost,
       subject,
+      senderName,
     }
 
     const kMessage = {
