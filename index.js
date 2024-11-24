@@ -31,6 +31,7 @@ exports.cache_and_save = function (next, connection) {
     const emailId = plugin.generateId();
     const fromHeader = transaction.header.get('From').replace(/\n+$/, '');
     const senderName = fromHeader.replace(/<[^>]*>/g, "").trim();
+    const inReplyTo = transaction.header.get('In-Reply-To').replace(/\n+$/, '');
 
     const kMessageBody = {
       emailId,
@@ -41,6 +42,7 @@ exports.cache_and_save = function (next, connection) {
       heloHost,
       subject,
       senderName,
+      inReplyTo
     }
 
     const kMessage = {
