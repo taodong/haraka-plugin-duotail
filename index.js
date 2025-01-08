@@ -20,6 +20,11 @@ exports.cache_and_save = function (next, connection) {
 
   if (!connection?.transaction) return next();
 
+  const authResults = connection.transaction.notes.get("mailauth");
+  
+  const spfCheck = plugin.etractSpfResult(authResults);
+  const dkimCheck = plugin.extractDkimResult(authResults);
+
   if (plugin.cfg.main.enabled) {
     const { transaction, remote, hello } = connection;
     const mailFrom = transaction.mail_from;
@@ -42,7 +47,9 @@ exports.cache_and_save = function (next, connection) {
       heloHost,
       subject,
       senderName,
-      inReplyTo
+      inReplyTo,
+      spfCheck,
+      dkimCheck
     }
 
     const kMessage = {
@@ -91,6 +98,15 @@ exports.cache_and_save = function (next, connection) {
 
 
   next()
+}
+
+exports.etractSpfResult = function (authResults) {
+  return authResults?.spf?.status?.result ?? 'unknown';
+}
+
+exports.extractDkimResult = function (authResults) {
+  var results = authResults?.dkim?.results ?? [];
+  return results.some(item => item?.status?.result === 'pass') ? 'pass' : 'fail';
 }
 
 exports.createHazelcastStream = function (map, key) {
@@ -221,6 +237,14 @@ exports.load_duotail_ini = function () {
     plugin.cfg.hazelcast.cacheMapName = 'original-email';
   }
 
+  if (!Number.isInteger(plugin.cfg.hazelcast.connectionTimeout)) {
+    plugin.cfg.hazelcast.connectionTimeout = 5000;
+  }
+
+  if (plugin.cfg.hazelcast.reconnectMode !== 'OFF') {
+    plugin.cfg.hazelcast.reconnectMode = 'ON';
+  }
+
   plugin.validateKafka();
 
   plugin.validateHazelcast();
@@ -250,6 +274,11 @@ exports.load_duotail_ini = function () {
       clusterName: plugin.cfg.hazelcast.clusterName,
       network: {
         clusterMembers: plugin.cfg.hazelcast.clusterMembers.split(','),
+        connectionTimeout: plugin.cfg.hazelcast.connectionTimeout,
+        connectionStrategy: {
+          asyncStart: false,
+          reconnectMode: plugin.cfg.hazelcast.reconnectMode,
+        },
       }
     }
 

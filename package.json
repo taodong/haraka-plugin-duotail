@@ -13,7 +13,7 @@
     "lint:fix": "npx eslint@^8 *.js test --fix",
     "prettier": "npx prettier . --check",
     "prettier:fix": "npx prettier . --write --log-level=warn",
-    "test": "node --test",
+    "test": "mocha",
     "versions": "npx dependency-version-checker check",
     "versions:fix": "npx dependency-version-checker update"
   },
@@ -33,12 +33,12 @@
   "homepage": "https://github.com/haraka/haraka-plugin-duotail#readme",
   "devDependencies": {
     "@haraka/eslint-config": "1.1.3",
-    "haraka-test-fixtures": "1.3.5"
+    "haraka-test-fixtures": "1.3.5",
+    "mocha": "^11.0.1"
   },
   "dependencies": {
     "hazelcast-client": "^5.3.0",
     "jslint": "^0.12.1",
-    "kafkajs": "^2.2.4",
-    "mocha": "^11.0.1"
+    "kafkajs": "^2.2.4"
   }
 }
