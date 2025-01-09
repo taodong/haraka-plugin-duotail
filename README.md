@@ -24,8 +24,6 @@ cp node_modules/haraka-plugin-duotail/config/duotail.ini config/duotail.ini
 $EDITOR config/duotail.ini
 ```
 
-## USAGE
-
 <!-- leave these buried at the bottom of the document -->
 
 [ci-img]: https://github.com/taodong/hakara-plugin-duotail/actions/workflows/ci.yml/badge.svg
