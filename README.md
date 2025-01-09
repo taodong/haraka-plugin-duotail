@@ -1,47 +1,10 @@
 [![CI Test Status][ci-img]][ci-url]
-[![Code Climate][clim-img]][clim-url]
 
-[![NPM][npm-img]][npm-url]
+<!-- [![NPM][npm-img]][npm-url] -->
 
 # haraka-plugin-duotail
 
-Clone me, to create a new Haraka plugin!
-
-## Template Instructions
-
-These instructions will not self-destruct after use. Use and destroy.
-
-See also, [How to Write a Plugin](https://github.com/haraka/Haraka/wiki/Write-a-Plugin) and [Plugins.md](https://github.com/haraka/Haraka/blob/master/docs/Plugins.md) for additional plugin writing information.
-
-## Create a new repo for your plugin
-
-Haraka plugins are named like `haraka-plugin-something`. All the namespace after `haraka-plugin-` is yours for the taking. Please check the [Plugins](https://github.com/haraka/Haraka/blob/master/Plugins.md) page and a Google search to see what plugins already exist.
-
-Once you've settled on a name, create the GitHub repo. On the [duotail repo's main page](https://github.com/haraka/haraka-plugin-duotail), click the _Use this duotail_ button and create your new repository. Then paste that URL into a local ENV variable with a command like this:
-
-```sh
-export MY_GITHUB_ORG=haraka
-export MY_PLUGIN_NAME=haraka-plugin-SOMETHING
-```
-
-Clone and rename the duotail repo:
-
-```sh
-git clone git@github.com:haraka/$MY_PLUGIN_NAME.git
-cd $MY_PLUGIN_NAME
-```
-
-Now you'll have a local git repo to begin authoring your plugin
-
-## rename boilerplate
-
-Replaces all uses of the word `duotail` with your plugin's name.
-
-./redress.sh [something]
-
-You'll then be prompted to update package.json and then force push this repo onto the GitHub repo you've created earlier.
-
-# Add your content here
+Haraka plugin for Duotail project. It routes the incoming email to a Hazelcast cache and sends a summary to a Kafka topic
 
 ## INSTALL
 
@@ -54,7 +17,7 @@ service haraka restart
 
 ### Configuration
 
-If the default configuration is not sufficient, copy the config file from the distribution into your haraka config dir and then modify it:
+Copy the config file from the distribution into your haraka config dir and then modify it:
 
 ```sh
 cp node_modules/haraka-plugin-duotail/config/duotail.ini config/duotail.ini
@@ -65,9 +28,7 @@ $EDITOR config/duotail.ini
 
 <!-- leave these buried at the bottom of the document -->
 
-[ci-img]: https://github.com/haraka/haraka-plugin-duotail/actions/workflows/ci.yml/badge.svg
-[ci-url]: https://github.com/haraka/haraka-plugin-duotail/actions/workflows/ci.yml
-[clim-img]: https://codeclimate.com/github/haraka/haraka-plugin-duotail/badges/gpa.svg
-[clim-url]: https://codeclimate.com/github/haraka/haraka-plugin-duotail
+[ci-img]: https://github.com/taodong/hakara-plugin-duotail/actions/workflows/ci.yml/badge.svg
+[ci-url]: https://github.com/taodong/hakara-plugin-duotail/actions/workflows/ci.yml
 [npm-img]: https://nodei.co/npm/haraka-plugin-duotail.png
 [npm-url]: https://www.npmjs.com/package/haraka-plugin-duotail
