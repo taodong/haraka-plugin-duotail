@@ -275,10 +275,10 @@ exports.load_duotail_ini = function () {
       network: {
         clusterMembers: plugin.cfg.hazelcast.clusterMembers.split(','),
         connectionTimeout: plugin.cfg.hazelcast.connectionTimeout,
-        connectionStrategy: {
-          asyncStart: false,
-          reconnectMode: plugin.cfg.hazelcast.reconnectMode,
-        },
+      },
+      connectionStrategy: {
+        asyncStart: false,
+        reconnectMode: plugin.cfg.hazelcast.reconnectMode,
       }
     }
 
