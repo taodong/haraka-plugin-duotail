@@ -66,29 +66,31 @@ exports.cache_and_save = function (next, connection) {
 
     const topic = plugin.cfg.kafka.topic;
 
-    const saveEmailSummary = () => {
+    const saveEmailSummary = async (summaryMessage) => {
       return plugin.kafkaProducer
         .send({
           topic,
-          messages: [kMessage],
+          messages: [summaryMessage],
         })
         .then(console.log)
         .catch(e => console.error(`[kafka/sendMessage] ${e.message}`, e))
     }
 
-    const cacheEmail = async () => {
+    const cacheEmail = async (trans, id) => {
       const map = await plugin.hzClient.getMap(plugin.cfg.hazelcast.cacheMapName);
-      const cacheStream = plugin.createHazelcastStream(map, emailId);
-      transaction.message_stream.pipe(cacheStream, { line_endings: '\n' });
+      const cacheStream = plugin.createHazelcastStream(map, id);
+      trans.message_stream.pipe(cacheStream, { line_endings: '\n' });
     }
 
-    const run = async () => {
-      await saveEmailSummary();
-      await cacheEmail();
+    const run = async (id, sm, trans) => {
+      await cacheEmail(trans, id);
+      await saveEmailSummary(sm);
+      connection.loginfo(plugin, `Done async email processing for: ${id}`);
     }
 
-    run().catch(e => connection.logerror(`[kafka||hazelcast] ${e.message}`, e))
-
+    setTimeout(() => {
+      run(emailId, kMessage, transaction).catch(e => connection.logerror(`[kafka||hazelcast] ${e.message}`, e))
+    }, 120000); // 2 minutes timeout
 
     connection.loginfo(plugin, 'Processed email: ', kMessage);
 
