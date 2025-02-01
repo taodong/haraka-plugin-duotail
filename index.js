@@ -217,7 +217,7 @@ exports.load_duotail_ini = function () {
     },
   );
 
-  console.log('config: ' + JSON.stringify(plugin.cfg))
+  console.log('Loaded plugin config: ' + JSON.stringify(plugin.cfg))
 
   if (!plugin.cfg.kafka.clientId) {
     plugin.cfg.kafka.clientId = 'haraka'
@@ -253,13 +253,17 @@ exports.load_duotail_ini = function () {
 
   if (plugin.cfg.main.enabled) {
     // initialize kafka producer
-    const kafka = new Kafka({
+    const kafkaConfig = {
       clientId: plugin.cfg.kafka.clientId,
       brokers: plugin.cfg.kafka.brokers.split(','),
       connectionTimeout: plugin.cfg.kafka.connectionTimeout,
       requestTimeout: plugin.cfg.kafka.producerTimeout,
       logLevel: logLevel.WARN,
-    });
+    };
+
+    console.log('Apply Kafka configuration: ' + JSON.stringify(kafkaConfig));
+
+    const kafka = new Kafka(kafkaConfig);
 
     plugin.kafkaProducer = kafka.producer({
       allowAutoTopicCreation: false,
@@ -283,6 +287,8 @@ exports.load_duotail_ini = function () {
         reconnectMode: plugin.cfg.hazelcast.reconnectMode,
       }
     }
+
+    console.log('Apply Hazelcast configuration: ' + JSON.stringify(hazelcastConfig));
 
     const connectHazelcast = async () => {
       plugin.hzClient = await Client.newHazelcastClient(hazelcastConfig);

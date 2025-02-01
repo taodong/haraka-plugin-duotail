@@ -37,6 +37,27 @@ describe('duotail', function() {
     });
 
     it('sets up a transaction', function() {
+      this.configfile = {
+        "kafka": {
+          "messageVersion": "test",
+          "brokers": ["localhost:9092"],
+          "topic": "test",
+          "produceTimeout": 100,
+          "connectTimeout": 100
+        },
+        "hazelcast": {
+          "clusterName": "test",
+          "clusterMembers": ["localhost:5701"],
+          "cacheMapName": "test",
+          "connectTimeout": 100,
+          "reconnectMode": "OFF"
+        }
+      };
+
+      this.plugin.config.get = function(file, type) {
+        return this.configfile;
+      }.bind(this);
+
       this.connection = fixtures.connection.createConnection({});
       this.connection.init_transaction();
       assert.ok(this.connection.transaction.header);
