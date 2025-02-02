@@ -54,7 +54,8 @@ describe('duotail', function() {
         }
       };
 
-      this.plugin.config.get = function(file, type) {
+      // eslint-disable-next-line no-unused-vars
+      this.plugin.config.get = function(_file, _type) {
         return this.configfile;
       }.bind(this);
 

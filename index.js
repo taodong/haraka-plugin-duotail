@@ -88,9 +88,7 @@ exports.cache_and_save = function (next, connection) {
       connection.loginfo(plugin, `Done async email processing for: ${id}`);
     }
 
-    setTimeout(() => {
-      run(emailId, kMessage, transaction).catch(e => connection.logerror(`[kafka||hazelcast] ${e.message}`, e))
-    }, 120000); // 2 minutes timeout
+    run(emailId, kMessage, transaction).catch(e => connection.logerror(`[kafka||hazelcast] ${e.message}`, e));
 
     connection.loginfo(plugin, 'Processed email: ', kMessage);
 
