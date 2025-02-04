@@ -80,11 +80,18 @@ exports.cache_and_save = function (next, connection) {
       const map = await plugin.hzClient.getMap(plugin.cfg.hazelcast.cacheMapName);
       const cacheStream = plugin.createHazelcastStream(map, id);
       trans.message_stream.pipe(cacheStream, { line_endings: '\n' });
+
+      trans.message_stream.on('error', () => {
+        trans.message_stream.unpipe(cacheStream);
+        cacheStream.end();
+        console.error(`[Hazelcast] Error writing to Hazelcast for email ${id}.`);
+      });
     }
 
     const run = async (id, sm, trans) => {
       await cacheEmail(trans, id);
       await saveEmailSummary(sm);
+      trans.discard_data = true;
       connection.loginfo(plugin, `Done async email processing for: ${id}`);
     }
 
