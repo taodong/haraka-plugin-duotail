@@ -76,23 +76,21 @@ exports.cache_and_save = function (next, connection) {
         .catch(e => console.error(`[kafka/sendMessage] ${e.message}`, e))
     }
 
-    const cacheEmail = async (trans, id) => {
+    const cacheEmail = async (message_stream, id) => {
       const map = await plugin.hzClient.getMap(plugin.cfg.hazelcast.cacheMapName);
       const cacheStream = plugin.createHazelcastStream(map, id);
-      trans.message_stream.pipe(cacheStream, { line_endings: '\n' });
 
-      trans.message_stream.on('error', () => {
-        trans.message_stream.unpipe(cacheStream);
-        cacheStream.end();
-        console.error(`[Hazelcast] Error writing to Hazelcast for email ${id}.`);
-      });
+      console.log(`Haraka readable stream id is ${message_stream.uuid}`);
+
+      message_stream.pipe(cacheStream, { line_endings: '\n' });
+
     }
 
     const run = async (id, sm, trans) => {
-      await cacheEmail(trans, id);
+      await cacheEmail(trans.message_stream, id);
       await saveEmailSummary(sm);
-      trans.discard_data = true;
       connection.loginfo(plugin, `Done async email processing for: ${id}`);
+      next();
     }
 
     run(emailId, kMessage, transaction).catch(e => connection.logerror(`[kafka||hazelcast] ${e.message}`, e));
@@ -100,11 +98,10 @@ exports.cache_and_save = function (next, connection) {
     connection.loginfo(plugin, 'Processed email: ', kMessage);
 
   } else {
-    connection.logdebug(plugin, 'duotail is disabled through configuration')
+    connection.logdebug(plugin, 'duotail is disabled through configuration');
+    next()
   }
 
-
-  next()
 }
 
 exports.etractSpfResult = function (authResults) {
