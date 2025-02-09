@@ -20,11 +20,45 @@ describe('duotail', function() {
 
   describe('load_duotail_ini', function() {
     it('loads duotail.ini from config/duotail.ini', function() {
+      this.configfile = {
+        main: {
+          enabled: false
+        }
+      };
+
+      // eslint-disable-next-line no-unused-vars
+      this.plugin.config.get = function(_file, _type) {
+        return this.configfile;
+      }.bind(this);
       this.plugin.load_duotail_ini();
       assert.ok(this.plugin.cfg !== undefined);
     });
 
     it('initializes enabled boolean', function() {
+      this.configfile = {
+        main: {
+          enabled: true
+        },
+        "kafka": {
+          "messageVersion": "test",
+          "brokers": "localhost:9092,localhost:9093",
+          "topic": "test",
+          "producerTimeout": 100,
+          "connectTimeout": 100
+        },
+        "hazelcast": {
+          "clusterName": "test",
+          "clusterMembers": "localhost:5701",
+          "connectTimeout": 100,
+          "reconnectMode": "OFF",
+          "clusterConnectionTimeout": 1000
+        }
+      };
+
+      // eslint-disable-next-line no-unused-vars
+      this.plugin.config.get = function(_file, _type) {
+        return this.configfile;
+      }.bind(this);
       this.plugin.load_duotail_ini();
       assert.equal(this.plugin.cfg.main.enabled, true, this.plugin.cfg);
     });
@@ -40,14 +74,14 @@ describe('duotail', function() {
       this.configfile = {
         "kafka": {
           "messageVersion": "test",
-          "brokers": ["localhost:9092"],
+          "brokers": "localhost:9092",
           "topic": "test",
-          "produceTimeout": 100,
+          "producerTimeout": 100,
           "connectTimeout": 100
         },
         "hazelcast": {
           "clusterName": "test",
-          "clusterMembers": ["localhost:5701"],
+          "clusterMembers": "localhost:5701",
           "cacheMapName": "test",
           "connectTimeout": 100,
           "reconnectMode": "OFF"

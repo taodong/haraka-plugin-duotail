@@ -221,44 +221,48 @@ exports.load_duotail_ini = function () {
 
   console.log('Loaded plugin config: ' + JSON.stringify(plugin.cfg))
 
-  if (!plugin.cfg.kafka.clientId) {
-    plugin.cfg.kafka.clientId = 'haraka'
-  }
-
-  if (!Number.isInteger(plugin.cfg.kafka.producerTimeout)) {
-    plugin.cfg.kafka.producerTimeout = 30000;
-  }
-
-  if (!Number.isInteger(plugin.cfg.kafka.connectionTimeout)) {
-    plugin.cfg.kafka.connectionTimeout = 30000;
-  }
-
-  if (!plugin.cfg.kafka.messageType) {
-    plugin.cfg.kafka.messageType = 'com.duotail.collector.common.model.MessageSummary';
-  }
-
-  if (!plugin.cfg.hazelcast.cacheMapName) {
-    plugin.cfg.hazelcast.cacheMapName = 'original-email';
-  }
-
-  if (!Number.isInteger(plugin.cfg.hazelcast.connectionTimeout)) {
-    plugin.cfg.hazelcast.connectionTimeout = 5000;
-  }
-
-  if (plugin.cfg.hazelcast.reconnectMode !== 'OFF') {
-    plugin.cfg.hazelcast.reconnectMode = 'ON';
-  }
-
-  plugin.validateKafka();
-
-  plugin.validateHazelcast();
-
   if (plugin.cfg.main.enabled) {
+    if (!plugin.cfg.kafka.clientId) {
+      plugin.cfg.kafka.clientId = 'haraka'
+    }
+
+    if (!Number.isInteger(plugin.cfg.kafka.producerTimeout)) {
+      plugin.cfg.kafka.producerTimeout = 30000;
+    }
+
+    if (!Number.isInteger(plugin.cfg.kafka.connectTimeout)) {
+      plugin.cfg.kafka.connectTimeout = 30000;
+    }
+
+    if (!plugin.cfg.kafka.messageType) {
+      plugin.cfg.kafka.messageType = 'com.duotail.collector.common.model.MessageSummary';
+    }
+
+    if (!plugin.cfg.hazelcast.cacheMapName) {
+      plugin.cfg.hazelcast.cacheMapName = 'original-email';
+    }
+
+    if (!Number.isInteger(plugin.cfg.hazelcast.connectTimeout)) {
+      plugin.cfg.hazelcast.connectTimeout = 50000;
+    }
+
+    if (plugin.cfg.hazelcast.reconnectMode !== 'OFF') {
+      plugin.cfg.hazelcast.reconnectMode = 'ON';
+    }
+
+    if (!Number.isInteger(plugin.cfg.hazelcast.clusterConnectionTimeout)) {
+      plugin.cfg.hazelcast.clusterConnectionTimeout = 50000;
+    }
+
+    plugin.validateKafka();
+
+    plugin.validateHazelcast();
+
     // initialize kafka producer
     const kafkaConfig = {
       clientId: plugin.cfg.kafka.clientId,
-      brokers: plugin.cfg.kafka.brokers.split(','),
-      connectionTimeout: plugin.cfg.kafka.connectionTimeout,
+      brokers: plugin.cfg.kafka.brokers.split(',').map(broker => broker.trim()),
+      connectionTimeout: plugin.cfg.kafka.connectTimeout,
       requestTimeout: plugin.cfg.kafka.producerTimeout,
       logLevel: logLevel.WARN,
     };
@@ -281,12 +285,15 @@ exports.load_duotail_ini = function () {
     const hazelcastConfig = {
       clusterName: plugin.cfg.hazelcast.clusterName,
       network: {
-        clusterMembers: plugin.cfg.hazelcast.clusterMembers.split(','),
-        connectionTimeout: plugin.cfg.hazelcast.connectionTimeout,
+        clusterMembers: plugin.cfg.hazelcast.clusterMembers.split(',').map(member => member.trim()),
+        connectionTimeout: plugin.cfg.hazelcast.connectTimeout,
       },
       connectionStrategy: {
         asyncStart: false,
         reconnectMode: plugin.cfg.hazelcast.reconnectMode,
+        connectionRetry: {
+          clusterConnectTimeoutMillis: plugin.cfg.hazelcast.clusterConnectionTimeout
+        }
       }
     }
 
