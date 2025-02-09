@@ -26,6 +26,9 @@ jobs:
       - name: Install Node.js dependencies
         run: npm ci
 
+      - name: Run tests
+        run: npm test
+        
       - name: Run linters
         uses: wearerequired/lint-action@v2
         with:
@@ -37,6 +40,5 @@ jobs:
           prettier_options: --check **/*.js
           dry: true
 
-      - name: Run tests
-        run: npm test
+      
           
