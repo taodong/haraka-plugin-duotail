@@ -28,9 +28,9 @@
   "author": "Tao Dong <wedgeup@gmail.com>",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/haraka/haraka-plugin-duotail/issues"
+    "url": "https://github.com/taodong/haraka-plugin-duotail/issues"
   },
-  "homepage": "https://github.com/haraka/haraka-plugin-duotail#readme",
+  "homepage": "https://github.com/taodong/haraka-plugin-duotail#readme",
   "devDependencies": {
     "@haraka/eslint-config": "1.1.3",
     "haraka-test-fixtures": "1.3.5",
