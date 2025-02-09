@@ -1,42 +1,43 @@
 'use strict'
 
-const { Kafka, logLevel } = require('kafkajs');
-const { Client } = require('hazelcast-client');
-const { Writable } = require('stream');
-
-
+const { Kafka, logLevel } = require('kafkajs')
+const { Client } = require('hazelcast-client')
+const { Writable } = require('stream')
 
 exports.register = function () {
-  const plugin = this;
+  const plugin = this
 
-  plugin.load_duotail_ini();
+  plugin.load_duotail_ini()
 
   // register hooks here. More info at https://haraka.github.io/core/Plugins/
-  plugin.register_hook('queue', 'cache_and_save');
+  plugin.register_hook('queue', 'cache_and_save')
 }
 
 exports.cache_and_save = function (next, connection) {
-  const plugin = this;
+  const plugin = this
 
-  if (!connection?.transaction) return next();
+  if (!connection?.transaction) return next()
 
-  const authResults = connection.transaction.notes.get("mailauth");
-  
-  const spfCheck = plugin.etractSpfResult(authResults);
-  const dkimCheck = plugin.extractDkimResult(authResults);
+  const authResults = connection.transaction.notes.get('mailauth')
+
+  const spfCheck = plugin.etractSpfResult(authResults)
+  const dkimCheck = plugin.extractDkimResult(authResults)
 
   if (plugin.cfg.main.enabled) {
-    const { transaction, remote, hello } = connection;
-    const mailFrom = transaction.mail_from;
-    const rcptTo = transaction.rcpt_to;
-    const remoteIp = remote.ip;
-    const remoteHost = remote.host;
-    const heloHost = hello?.host;
-    const subject = transaction.header.get_all('Subject').length > 0 ? transaction.header.get('Subject').replace(/\n+$/, '') : null;
-    const emailId = plugin.generateId();
-    const fromHeader = transaction.header.get('From').replace(/\n+$/, '');
-    const senderName = fromHeader.replace(/<[^>]*>/g, "").trim();
-    const inReplyTo = transaction.header.get('In-Reply-To').replace(/\n+$/, '');
+    const { transaction, remote, hello } = connection
+    const mailFrom = transaction.mail_from
+    const rcptTo = transaction.rcpt_to
+    const remoteIp = remote.ip
+    const remoteHost = remote.host
+    const heloHost = hello?.host
+    const subject =
+      transaction.header.get_all('Subject').length > 0
+        ? transaction.header.get('Subject').replace(/\n+$/, '')
+        : null
+    const emailId = plugin.generateId()
+    const fromHeader = transaction.header.get('From').replace(/\n+$/, '')
+    const senderName = fromHeader.replace(/<[^>]*>/g, '').trim()
+    const inReplyTo = transaction.header.get('In-Reply-To').replace(/\n+$/, '')
 
     const kMessageBody = {
       emailId,
@@ -49,7 +50,7 @@ exports.cache_and_save = function (next, connection) {
       senderName,
       inReplyTo,
       spfCheck,
-      dkimCheck
+      dkimCheck,
     }
 
     const kMessage = {
@@ -60,11 +61,11 @@ exports.cache_and_save = function (next, connection) {
         'correlation-id': emailId,
         'haraka-ip': connection.local.ip,
         'haraka-host': connection.local.host,
-        '__TypeId__': plugin.cfg.kafka.messageType,
-      }
+        __TypeId__: plugin.cfg.kafka.messageType,
+      },
     }
 
-    const topic = plugin.cfg.kafka.topic;
+    const topic = plugin.cfg.kafka.topic
 
     const saveEmailSummary = async (summaryMessage) => {
       return plugin.kafkaProducer
@@ -73,151 +74,166 @@ exports.cache_and_save = function (next, connection) {
           messages: [summaryMessage],
         })
         .then(console.log)
-        .catch(e => console.error(`[kafka/sendMessage] ${e.message}`, e))
+        .catch((e) => console.error(`[kafka/sendMessage] ${e.message}`, e))
     }
 
     const cacheEmail = async (message_stream, id) => {
-      const map = await plugin.hzClient.getMap(plugin.cfg.hazelcast.cacheMapName);
-      const cacheStream = plugin.createHazelcastStream(map, id);
+      const map = await plugin.hzClient.getMap(
+        plugin.cfg.hazelcast.cacheMapName,
+      )
+      const cacheStream = plugin.createHazelcastStream(map, id)
 
-      console.log(`Haraka readable stream id is ${message_stream.uuid}`);
+      console.log(`Haraka readable stream id is ${message_stream.uuid}`)
 
-      message_stream.pipe(cacheStream, { line_endings: '\n' });
-
+      message_stream.pipe(cacheStream, { line_endings: '\n' })
     }
 
     const run = async (id, sm, trans) => {
-      await cacheEmail(trans.message_stream, id);
-      await saveEmailSummary(sm);
-      connection.loginfo(plugin, `Done async email processing for: ${id}`);
-      next();
+      await cacheEmail(trans.message_stream, id)
+      await saveEmailSummary(sm)
+      connection.loginfo(plugin, `Done async email processing for: ${id}`)
+      next()
     }
 
-    run(emailId, kMessage, transaction).catch(e => connection.logerror(`[kafka||hazelcast] ${e.message}`, e));
+    run(emailId, kMessage, transaction).catch((e) =>
+      connection.logerror(`[kafka||hazelcast] ${e.message}`, e),
+    )
 
-    connection.loginfo(plugin, 'Processed email: ', kMessage);
-
+    connection.loginfo(plugin, 'Processed email: ', kMessage)
   } else {
-    connection.logdebug(plugin, 'duotail is disabled through configuration');
+    connection.logdebug(plugin, 'duotail is disabled through configuration')
     next()
   }
-
 }
 
 exports.etractSpfResult = function (authResults) {
-  return authResults?.spf?.status?.result ?? 'unknown';
+  return authResults?.spf?.status?.result ?? 'unknown'
 }
 
 exports.extractDkimResult = function (authResults) {
-  var results = authResults?.dkim?.results ?? [];
-  return results.some(item => item?.status?.result === 'pass') ? 'pass' : 'fail';
+  var results = authResults?.dkim?.results ?? []
+  return results.some((item) => item?.status?.result === 'pass')
+    ? 'pass'
+    : 'fail'
 }
 
 exports.createHazelcastStream = function (map, key) {
   class HazelcastWritableStream extends Writable {
     constructor(map, key, options) {
-      super(options);
-      this.map = map;
-      this.key = key;
-      this.chunks = [];
+      super(options)
+      this.map = map
+      this.key = key
+      this.chunks = []
     }
 
     _write(chunk, encoding, callback) {
-      this.chunks.push(chunk);
-      callback();
+      this.chunks.push(chunk)
+      callback()
     }
 
     async _final(callback) {
       try {
-        await this.map.put(this.key, Buffer.concat(this.chunks).toString());
-        callback();
+        await this.map.put(this.key, Buffer.concat(this.chunks).toString())
+        callback()
       } catch (e) {
-        callback(e);
+        callback(e)
       }
     }
   }
 
-  return new HazelcastWritableStream(map, key);
+  return new HazelcastWritableStream(map, key)
 }
 
-exports.shutdown = function() {
-  const plugin = this;
+exports.shutdown = function () {
+  const plugin = this
 
   if (plugin.cfg.main.enabled) {
     const disconnectProducer = async () => {
-      await plugin.kafkaProducer.disconnect();
+      await plugin.kafkaProducer.disconnect()
     }
 
-    disconnectProducer().catch(e => console.error(`[kafka/disconnect] ${e.message}`, e))
+    disconnectProducer().catch((e) =>
+      console.error(`[kafka/disconnect] ${e.message}`, e),
+    )
 
     const disconnectHazelcast = async () => {
-      await plugin.hzClient.shutdown();
+      await plugin.hzClient.shutdown()
     }
 
-    disconnectHazelcast().catch(e => console.error(`[hazelcast/disconnect] ${e.message}`, e))
+    disconnectHazelcast().catch((e) =>
+      console.error(`[hazelcast/disconnect] ${e.message}`, e),
+    )
   }
 }
 
-
 exports.validateKafka = function () {
-  const plugin = this;
+  const plugin = this
 
   if (plugin.cfg.main.enabled) {
     if (!plugin.cfg.kafka.brokers || plugin.cfg.kafka.brokers.length === 0) {
-      plugin.failConfiguration('Kafka producer brokers are required');
+      plugin.failConfiguration('Kafka producer brokers are required')
     }
     if (!plugin.cfg.kafka.topic || plugin.cfg.kafka.topic.length === 0) {
-      plugin.failConfiguration('Kafka producer topic is required');
+      plugin.failConfiguration('Kafka producer topic is required')
     }
 
-    if (!plugin.cfg.kafka.messageVersion || plugin.cfg.kafka.messageVersion.length === 0) {
-      plugin.failConfiguration('Kafka producer messageVersion is required');
+    if (
+      !plugin.cfg.kafka.messageVersion ||
+      plugin.cfg.kafka.messageVersion.length === 0
+    ) {
+      plugin.failConfiguration('Kafka producer messageVersion is required')
     }
   }
 }
 
 exports.validateHazelcast = function () {
-  const plugin = this;
+  const plugin = this
   if (plugin.cfg.main.enabled) {
-    if (!plugin.cfg.hazelcast.clusterName || plugin.cfg.hazelcast.clusterName.length === 0) {
-      plugin.failConfiguration('Hazelcast cluster name is required');
+    if (
+      !plugin.cfg.hazelcast.clusterName ||
+      plugin.cfg.hazelcast.clusterName.length === 0
+    ) {
+      plugin.failConfiguration('Hazelcast cluster name is required')
     }
-    if (!plugin.cfg.hazelcast.clusterMembers || plugin.cfg.hazelcast.clusterMembers.length === 0) {
-      plugin.failConfiguration('Hazelcast cluser members are required');
+    if (
+      !plugin.cfg.hazelcast.clusterMembers ||
+      plugin.cfg.hazelcast.clusterMembers.length === 0
+    ) {
+      plugin.failConfiguration('Hazelcast cluser members are required')
     }
   }
 }
 
 exports.failConfiguration = function (message) {
-  const plugin = this;
-  plugin.cfg.main.enabled = false;
-  throw new Error(message);
+  const plugin = this
+  plugin.cfg.main.enabled = false
+  throw new Error(message)
 }
 
 exports.generateId = function () {
-  let id = '' + Date.now() + '-';
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let id = '' + Date.now() + '-'
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
   for (let i = 0; i < 15; i++) {
-    id += chars.charAt(Math.floor(Math.random() * chars.length));
+    id += chars.charAt(Math.floor(Math.random() * chars.length))
   }
 
-  return id;
+  return id
 }
 
 exports.load_duotail_ini = function () {
-  const plugin = this;
+  const plugin = this
 
   plugin.cfg = plugin.config.get(
     'duotail.ini',
     {
       booleans: [
         '+enabled', // this.cfg.main.enabled=true
-      ]
+      ],
     },
     () => {
       plugin.load_duotail_ini()
     },
-  );
+  )
 
   console.log('Loaded plugin config: ' + JSON.stringify(plugin.cfg))
 
@@ -227,84 +243,94 @@ exports.load_duotail_ini = function () {
     }
 
     if (!Number.isInteger(plugin.cfg.kafka.producerTimeout)) {
-      plugin.cfg.kafka.producerTimeout = 30000;
+      plugin.cfg.kafka.producerTimeout = 30000
     }
 
     if (!Number.isInteger(plugin.cfg.kafka.connectTimeout)) {
-      plugin.cfg.kafka.connectTimeout = 30000;
+      plugin.cfg.kafka.connectTimeout = 30000
     }
 
     if (!plugin.cfg.kafka.messageType) {
-      plugin.cfg.kafka.messageType = 'com.duotail.collector.common.model.MessageSummary';
+      plugin.cfg.kafka.messageType =
+        'com.duotail.collector.common.model.MessageSummary'
     }
 
     if (!plugin.cfg.hazelcast.cacheMapName) {
-      plugin.cfg.hazelcast.cacheMapName = 'original-email';
+      plugin.cfg.hazelcast.cacheMapName = 'original-email'
     }
 
     if (!Number.isInteger(plugin.cfg.hazelcast.connectTimeout)) {
-      plugin.cfg.hazelcast.connectTimeout = 50000;
+      plugin.cfg.hazelcast.connectTimeout = 50000
     }
 
     if (plugin.cfg.hazelcast.reconnectMode !== 'OFF') {
-      plugin.cfg.hazelcast.reconnectMode = 'ON';
+      plugin.cfg.hazelcast.reconnectMode = 'ON'
     }
 
     if (!Number.isInteger(plugin.cfg.hazelcast.clusterConnectionTimeout)) {
-      plugin.cfg.hazelcast.clusterConnectionTimeout = 50000;
+      plugin.cfg.hazelcast.clusterConnectionTimeout = 50000
     }
 
-    plugin.validateKafka();
+    plugin.validateKafka()
 
-    plugin.validateHazelcast();
+    plugin.validateHazelcast()
 
     // initialize kafka producer
     const kafkaConfig = {
       clientId: plugin.cfg.kafka.clientId,
-      brokers: plugin.cfg.kafka.brokers.split(',').map(broker => broker.trim()),
+      brokers: plugin.cfg.kafka.brokers
+        .split(',')
+        .map((broker) => broker.trim()),
       connectionTimeout: plugin.cfg.kafka.connectTimeout,
       requestTimeout: plugin.cfg.kafka.producerTimeout,
       logLevel: logLevel.WARN,
-    };
+    }
 
-    console.log('Apply Kafka configuration: ' + JSON.stringify(kafkaConfig));
+    console.log('Apply Kafka configuration: ' + JSON.stringify(kafkaConfig))
 
-    const kafka = new Kafka(kafkaConfig);
+    const kafka = new Kafka(kafkaConfig)
 
     plugin.kafkaProducer = kafka.producer({
       allowAutoTopicCreation: false,
-    });
+    })
 
     const connectProducer = async () => {
       await plugin.kafkaProducer.connect()
     }
 
-    connectProducer().catch(e => console.error(`[kafka/connect] ${e.message}`, e))
+    connectProducer().catch((e) =>
+      console.error(`[kafka/connect] ${e.message}`, e),
+    )
 
     // initialize hazelcast client
     const hazelcastConfig = {
       clusterName: plugin.cfg.hazelcast.clusterName,
       network: {
-        clusterMembers: plugin.cfg.hazelcast.clusterMembers.split(',').map(member => member.trim()),
+        clusterMembers: plugin.cfg.hazelcast.clusterMembers
+          .split(',')
+          .map((member) => member.trim()),
         connectionTimeout: plugin.cfg.hazelcast.connectTimeout,
       },
       connectionStrategy: {
         asyncStart: false,
         reconnectMode: plugin.cfg.hazelcast.reconnectMode,
         connectionRetry: {
-          clusterConnectTimeoutMillis: plugin.cfg.hazelcast.clusterConnectionTimeout
-        }
-      }
+          clusterConnectTimeoutMillis:
+            plugin.cfg.hazelcast.clusterConnectionTimeout,
+        },
+      },
     }
 
-    console.log('Apply Hazelcast configuration: ' + JSON.stringify(hazelcastConfig));
+    console.log(
+      'Apply Hazelcast configuration: ' + JSON.stringify(hazelcastConfig),
+    )
 
     const connectHazelcast = async () => {
-      plugin.hzClient = await Client.newHazelcastClient(hazelcastConfig);
+      plugin.hzClient = await Client.newHazelcastClient(hazelcastConfig)
     }
 
-    connectHazelcast().catch(e => console.error(`[hazelcast/connect] ${e.message}`, e))
-
+    connectHazelcast().catch((e) =>
+      console.error(`[hazelcast/connect] ${e.message}`, e),
+    )
   }
-
 }
