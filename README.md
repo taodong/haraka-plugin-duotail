@@ -1,10 +1,13 @@
-[![CI Test Status][ci-img]][ci-url]
+[![CI](https://github.com/taodong/haraka-plugin-duotail/actions/workflows/ci.yml/badge.svg)](https://github.com/taodong/haraka-plugin-duotail/actions/workflows/ci.yml)
 
-<!-- [![NPM][npm-img]][npm-url] -->
 
 # haraka-plugin-duotail
 
 Haraka plugin for Duotail project. It routes the incoming email to a Hazelcast cache and sends a summary to a Kafka topic
+
+## Dependency
+
+For production environment, mailauth plugin is needed before this plugin.
 
 ## INSTALL
 
