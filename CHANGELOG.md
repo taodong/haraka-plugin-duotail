@@ -6,3 +6,8 @@ Change log for duotail harak plugin
 
 Initial release
 
+## [1.0.1]
+
+Removed `jslint` from dependency
+Removed Changes.md file 
+
