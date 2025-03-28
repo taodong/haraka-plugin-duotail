@@ -78,9 +78,19 @@ exports.cache_and_save = function (next, connection) {
     }
 
     const cacheEmail = async (message_stream, id) => {
+      if (!plugin.hzClient || plugin.hzClient.getLifecycleService().isRunning() === false) {
+        connection.loginfo(plugin, 'Hazelcast client is not initialized or not running. Restarting...');
+        try {
+          plugin.hzClient = await Client.newHazelcastClient(plugin.hzConfig);
+          connection.loginfo(plugin, 'Hazelcast client restarted successfully.');
+        } catch (e) {
+          connection.logerror(plugin, `Failed to restart Hazelcast client: ${e.message}`, e);
+          throw new Error('Hazelcast client could not be restarted');
+        }
+      }
       const map = await plugin.hzClient.getMap(
         plugin.cfg.hazelcast.cacheMapName,
-      )
+      );
       const cacheStream = plugin.createHazelcastStream(map, id)
 
       console.log(`Haraka readable stream id is ${message_stream.uuid}`)
@@ -146,23 +156,28 @@ exports.createHazelcastStream = function (map, key) {
 
 exports.shutdown = function () {
   const plugin = this
+  console.log('Shutting down duotail plugin...')
 
   if (plugin.cfg.main.enabled) {
-    const disconnectProducer = async () => {
-      await plugin.kafkaProducer.disconnect()
+    if (plugin.kafkaProducer) {
+      const disconnectProducer = async () => {
+        await plugin.kafkaProducer.disconnect()
+      }
+
+      disconnectProducer().catch((e) =>
+        console.error(`[kafka/disconnect] ${e.message}`, e),
+      )
     }
 
-    disconnectProducer().catch((e) =>
-      console.error(`[kafka/disconnect] ${e.message}`, e),
-    )
+    if (plugin.hzClient && plugin.hzClient.getLifecycleService().isRunning()) {
+      const disconnectHazelcast = async () => {
+        await plugin.hzClient.shutdown()
+      }
 
-    const disconnectHazelcast = async () => {
-      await plugin.hzClient.shutdown()
+      disconnectHazelcast().catch((e) =>
+        console.error(`[hazelcast/disconnect] ${e.message}`, e),
+      )
     }
-
-    disconnectHazelcast().catch((e) =>
-      console.error(`[hazelcast/disconnect] ${e.message}`, e),
-    )
   }
 }
 
@@ -298,8 +313,11 @@ exports.load_duotail_ini = function () {
       await plugin.kafkaProducer.connect()
     }
 
-    connectProducer().catch((e) =>
-      console.error(`[kafka/connect] ${e.message}`, e),
+    connectProducer().catch((e) => {
+        console.error(`[kafka/connect] ${e.message}`, e);
+        plugin.shutdown();
+        throw new Error('Kafka producer could not be started')
+      }
     )
 
     // initialize hazelcast client
@@ -321,16 +339,21 @@ exports.load_duotail_ini = function () {
       },
     }
 
+    plugin.hzConfig = hazelcastConfig;
+
     console.log(
-      'Apply Hazelcast configuration: ' + JSON.stringify(hazelcastConfig),
+      'Apply Hazelcast configuration: ' + JSON.stringify(plugin.hzConfig),
     )
 
     const connectHazelcast = async () => {
-      plugin.hzClient = await Client.newHazelcastClient(hazelcastConfig)
+      plugin.hzClient = await Client.newHazelcastClient(plugin.hzConfig)
     }
 
-    connectHazelcast().catch((e) =>
-      console.error(`[hazelcast/connect] ${e.message}`, e),
+    connectHazelcast().catch((e) => {
+        console.error(`[hazelcast/connect] ${e.message}`, e);
+        plugin.shutdown()
+        throw new Error('Hazelcast client could not be started')
+      }
     )
   }
 }
