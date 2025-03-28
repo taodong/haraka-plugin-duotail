@@ -78,19 +78,29 @@ exports.cache_and_save = function (next, connection) {
     }
 
     const cacheEmail = async (message_stream, id) => {
-      if (!plugin.hzClient || plugin.hzClient.getLifecycleService().isRunning() === false) {
-        connection.loginfo(plugin, 'Hazelcast client is not initialized or not running. Restarting...');
+      if (
+        !plugin.hzClient ||
+        plugin.hzClient.getLifecycleService().isRunning() === false
+      ) {
+        connection.loginfo(
+          plugin,
+          'Hazelcast client is not initialized or not running. Restarting...',
+        )
         try {
-          plugin.hzClient = await Client.newHazelcastClient(plugin.hzConfig);
-          connection.loginfo(plugin, 'Hazelcast client restarted successfully.');
+          plugin.hzClient = await Client.newHazelcastClient(plugin.hzConfig)
+          connection.loginfo(plugin, 'Hazelcast client restarted successfully.')
         } catch (e) {
-          connection.logerror(plugin, `Failed to restart Hazelcast client: ${e.message}`, e);
-          throw new Error('Hazelcast client could not be restarted');
+          connection.logerror(
+            plugin,
+            `Failed to restart Hazelcast client: ${e.message}`,
+            e,
+          )
+          throw new Error('Hazelcast client could not be restarted')
         }
       }
       const map = await plugin.hzClient.getMap(
         plugin.cfg.hazelcast.cacheMapName,
-      );
+      )
       const cacheStream = plugin.createHazelcastStream(map, id)
 
       console.log(`Haraka readable stream id is ${message_stream.uuid}`)
@@ -314,11 +324,10 @@ exports.load_duotail_ini = function () {
     }
 
     connectProducer().catch((e) => {
-        console.error(`[kafka/connect] ${e.message}`, e);
-        plugin.shutdown();
-        throw new Error('Kafka producer could not be started')
-      }
-    )
+      console.error(`[kafka/connect] ${e.message}`, e)
+      plugin.shutdown()
+      throw new Error('Kafka producer could not be started')
+    })
 
     // initialize hazelcast client
     const hazelcastConfig = {
@@ -339,7 +348,7 @@ exports.load_duotail_ini = function () {
       },
     }
 
-    plugin.hzConfig = hazelcastConfig;
+    plugin.hzConfig = hazelcastConfig
 
     console.log(
       'Apply Hazelcast configuration: ' + JSON.stringify(plugin.hzConfig),
@@ -350,10 +359,9 @@ exports.load_duotail_ini = function () {
     }
 
     connectHazelcast().catch((e) => {
-        console.error(`[hazelcast/connect] ${e.message}`, e);
-        plugin.shutdown()
-        throw new Error('Hazelcast client could not be started')
-      }
-    )
+      console.error(`[hazelcast/connect] ${e.message}`, e)
+      plugin.shutdown()
+      throw new Error('Hazelcast client could not be started')
+    })
   }
 }
