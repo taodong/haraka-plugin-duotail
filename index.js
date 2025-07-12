@@ -38,7 +38,7 @@ exports.cache_and_save = function (next, connection) {
     const fromHeader = transaction.header.get('From').replace(/\n+$/, '')
     const senderName = fromHeader.replace(/<[^>]*>/g, '').trim()
     const inReplyTo = transaction.header.get('In-Reply-To').replace(/\n+$/, '')
-    const incomingId = transaction.notes.get('Message-ID')
+    const incomingId = transaction.header.get('Message-ID').replace(/\n+$/, '')
 
     const kMessageBody = {
       emailId,
