@@ -1,6 +1,6 @@
 {
   "name": "@tao.dong/haraka-plugin-duotail",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Haraka plugin that used for duotail project",
   "main": "index.js",
   "files": [
