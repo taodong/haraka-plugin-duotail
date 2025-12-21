@@ -17,3 +17,7 @@ Added condition check in shutdown logic
 ## [1.0.2] - 2025-07-11
 
 Set incoming email header 'Message-ID' value as 'incomingId' in Kafka payload
+
+## [1.0.3] - 2025-12-22
+
+Fix double sending issue of remote mail server sending email through multiple connections

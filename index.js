@@ -79,27 +79,22 @@ exports.cache_and_save = function (next, connection) {
         .catch((e) => console.error(`[kafka/sendMessage] ${e.message}`, e))
     }
 
-    const cacheEmail = async (message_stream, id) => {
-      if (
-        !plugin.hzClient ||
-        plugin.hzClient.getLifecycleService().isRunning() === false
-      ) {
-        connection.loginfo(
-          plugin,
-          'Hazelcast client is not initialized or not running. Restarting...',
-        )
-        try {
-          plugin.hzClient = await Client.newHazelcastClient(plugin.hzConfig)
-          connection.loginfo(plugin, 'Hazelcast client restarted successfully.')
-        } catch (e) {
-          connection.logerror(
-            plugin,
-            `Failed to restart Hazelcast client: ${e.message}`,
-            e,
-          )
-          throw new Error('Hazelcast client could not be restarted')
-        }
+    const cacheOriginalEmailId = async (id) => {
+      await plugin.connectCacheServer(connection)
+      const map = await plugin.hzClient.getMap(
+        plugin.cfg.hazelcast.emailIdCacheMapName,
+      )
+      const exists = await map.containsKey(id)
+      if (exists) {
+        return -1
+      } else {
+        await map.put(id, true)
+        return 1
       }
+    }
+
+    const cacheEmail = async (message_stream, id) => {
+      await plugin.connectCacheServer(connection)
       const map = await plugin.hzClient.getMap(
         plugin.cfg.hazelcast.cacheMapName,
       )
@@ -110,14 +105,28 @@ exports.cache_and_save = function (next, connection) {
       message_stream.pipe(cacheStream, { line_endings: '\n' })
     }
 
-    const run = async (id, sm, trans) => {
-      await cacheEmail(trans.message_stream, id)
-      await saveEmailSummary(sm)
-      connection.loginfo(plugin, `Done async email processing for: ${id}`)
-      next()
+    const run = async (id, incomingId, sm, trans) => {
+      if (incomingId) {
+        const cacheResult = await cacheOriginalEmailId(incomingId)
+        if (cacheResult === 1) {
+          await cacheEmail(trans.message_stream, id)
+          await saveEmailSummary(sm)
+          connection.loginfo(plugin, `Done async email processing for: ${id}`)
+          next()
+        } else {
+          connection.loginfo(plugin, `Email with incomingId ${incomingId} is already processed.`)
+          next()
+        }
+      } else {
+        // If no incomingId, proceed as before
+        await cacheEmail(trans.message_stream, id)
+        await saveEmailSummary(sm)
+        connection.loginfo(plugin, `Done async email processing for: ${id}`)
+        next()
+      }
     }
 
-    run(emailId, kMessage, transaction).catch((e) =>
+    run(emailId, incomingId, kMessage, transaction).catch((e) =>
       connection.logerror(`[kafka||hazelcast] ${e.message}`, e),
     )
 
@@ -286,6 +295,10 @@ exports.load_duotail_ini = function () {
       plugin.cfg.hazelcast.cacheMapName = 'original-email'
     }
 
+    if (!plugin.cfg.hazelcast.emailIdCacheMapName) {
+      plugin.cfg.hazelcast.emailIdCacheMapName = 'income-message-ids'
+    }
+
     if (!Number.isInteger(plugin.cfg.hazelcast.connectTimeout)) {
       plugin.cfg.hazelcast.connectTimeout = 50000
     }
@@ -356,14 +369,48 @@ exports.load_duotail_ini = function () {
       'Apply Hazelcast configuration: ' + JSON.stringify(plugin.hzConfig),
     )
 
-    const connectHazelcast = async () => {
-      plugin.hzClient = await Client.newHazelcastClient(plugin.hzConfig)
-    }
-
-    connectHazelcast().catch((e) => {
+    // moved Hazelcast connection logic to connectCacheServer()
+    plugin.connectCacheServer().catch((e) => {
       console.error(`[hazelcast/connect] ${e.message}`, e)
       plugin.shutdown()
       throw new Error('Hazelcast client could not be started')
     })
+  }
+}
+
+// Add connectCacheServer function
+exports.connectCacheServer = async function (connection) {
+  const plugin = this
+  if (
+    !plugin.hzClient ||
+    plugin.hzClient.getLifecycleService().isRunning() === false
+  ) {
+    if (connection) {
+      connection.loginfo(
+        plugin,
+        'Hazelcast client is not initialized or not running. Restarting...',
+      )
+    } else {
+      console.log('Hazelcast client is not initialized or not running. Restarting...')
+    }
+    try {
+      plugin.hzClient = await Client.newHazelcastClient(plugin.hzConfig)
+      if (connection) {
+        connection.loginfo(plugin, 'Hazelcast client restarted successfully.')
+      } else {
+        console.log('Hazelcast client restarted successfully.')
+      }
+    } catch (e) {
+      if (connection) {
+        connection.logerror(
+          plugin,
+          `Failed to restart Hazelcast client: ${e.message}`,
+          e,
+        )
+      } else {
+        console.error(`Failed to restart Hazelcast client: ${e.message}`, e)
+      }
+      throw new Error('Hazelcast client could not be restarted')
+    }
   }
 }
