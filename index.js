@@ -114,7 +114,10 @@ exports.cache_and_save = function (next, connection) {
           connection.loginfo(plugin, `Done async email processing for: ${id}`)
           next()
         } else {
-          connection.loginfo(plugin, `Email with incomingId ${incomingId} is already processed.`)
+          connection.loginfo(
+            plugin,
+            `Email with incomingId ${incomingId} is already processed.`,
+          )
           next()
         }
       } else {
@@ -391,7 +394,9 @@ exports.connectCacheServer = async function (connection) {
         'Hazelcast client is not initialized or not running. Restarting...',
       )
     } else {
-      console.log('Hazelcast client is not initialized or not running. Restarting...')
+      console.log(
+        'Hazelcast client is not initialized or not running. Restarting...',
+      )
     }
     try {
       plugin.hzClient = await Client.newHazelcastClient(plugin.hzConfig)
