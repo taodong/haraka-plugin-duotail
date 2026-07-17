@@ -22,6 +22,7 @@ exports.cache_and_save = function (next, connection) {
 
   const spfCheck = plugin.etractSpfResult(authResults)
   const dkimCheck = plugin.extractDkimResult(authResults)
+  const isBounce = plugin.extractBounceResult(connection.transaction)
 
   if (plugin.cfg.main.enabled) {
     const { transaction, remote, hello } = connection
@@ -52,6 +53,7 @@ exports.cache_and_save = function (next, connection) {
       inReplyTo,
       spfCheck,
       dkimCheck,
+      isBounce,
       incomingId,
     }
 
@@ -149,6 +151,10 @@ exports.extractDkimResult = function (authResults) {
   return results.some((item) => item?.status?.result === 'pass')
     ? 'pass'
     : 'fail'
+}
+
+exports.extractBounceResult = function (transaction) {
+  return transaction?.results?.get?.('bounce')?.isa === true
 }
 
 exports.createHazelcastStream = function (map, key) {
