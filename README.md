@@ -12,6 +12,8 @@ For production environment, the following plugins are needed before this plugin:
 - [mailauth](https://github.com/haraka/haraka-plugin-mailauth) — provides the SPF/DKIM results this plugin reads.
 - [bounce](https://github.com/haraka/haraka-plugin-bounce) (`haraka-plugin-bounce`) — flags bounce/DSN messages this plugin reads. Keep its `[reject]` config options disabled so bounce mail still reaches this plugin instead of being rejected at SMTP time.
 
+When the Kafka message schema changes (for example, adding `isBounce`), bump `messageVersion` in `config/duotail.ini` so downstream consumers can safely branch on the schema version.
+
 ## INSTALL
 
 ```sh
