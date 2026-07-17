@@ -67,6 +67,23 @@ describe('duotail', function () {
     })
   })
 
+  describe('extractBounceResult', function () {
+    it('returns true when haraka-plugin-bounce flagged the transaction', function () {
+      const transaction = { results: { get: () => ({ isa: true }) } }
+      assert.equal(this.plugin.extractBounceResult(transaction), true)
+    })
+
+    it('returns false when haraka-plugin-bounce did not flag the transaction', function () {
+      const transaction = { results: { get: () => ({ isa: false }) } }
+      assert.equal(this.plugin.extractBounceResult(transaction), false)
+    })
+
+    it('returns false when haraka-plugin-bounce is not installed', function () {
+      const transaction = { results: { get: () => undefined } }
+      assert.equal(this.plugin.extractBounceResult(transaction), false)
+    })
+  })
+
   describe('uses text fixtures', function () {
     it('sets up a connection', function () {
       this.connection = fixtures.connection.createConnection({})
