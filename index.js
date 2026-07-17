@@ -154,7 +154,7 @@ exports.extractDkimResult = function (authResults) {
 }
 
 exports.extractBounceResult = function (transaction) {
-  return transaction?.results?.get('bounce')?.isa === true
+  return transaction?.results?.get?.('bounce')?.isa === true
 }
 
 exports.createHazelcastStream = function (map, key) {
