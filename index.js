@@ -166,9 +166,12 @@ exports.extractBounceResult = function (transaction) {
 exports.isDeliveryStatusReport = function (transaction) {
   const contentType = transaction?.header?.get?.('Content-Type') ?? ''
   const normalized = contentType.replace(/\s+/g, ' ').trim().toLowerCase()
+  const mediaType = normalized.split(';', 1)[0].trim()
   return (
-    normalized.includes('multipart/report') &&
-    /report-type\s*=\s*"?delivery-status"?/.test(normalized)
+    mediaType === 'multipart/report' &&
+    /(?:^|;)\s*report-type\s*=\s*"?delivery-status"?\s*(?:;|$)/.test(
+      normalized,
+    )
   )
 }
 
