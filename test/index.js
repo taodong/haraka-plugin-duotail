@@ -67,20 +67,72 @@ describe('duotail', function () {
     })
   })
 
+  const buildTransaction = (isaResult, contentType) => ({
+    results: { get: () => isaResult },
+    header: { get: () => contentType },
+  })
+
   describe('extractBounceResult', function () {
-    it('returns true when haraka-plugin-bounce flagged the transaction', function () {
-      const transaction = { results: { get: () => ({ isa: true }) } }
+    it('returns true when flagged and Content-Type is a delivery-status report', function () {
+      const transaction = buildTransaction(
+        { isa: true },
+        'multipart/report; report-type=delivery-status',
+      )
       assert.equal(this.plugin.extractBounceResult(transaction), true)
     })
 
+    it('returns false for an auto-responder (null sender but text/plain)', function () {
+      const transaction = buildTransaction({ isa: true }, 'text/plain')
+      assert.equal(this.plugin.extractBounceResult(transaction), false)
+    })
+
+    it('returns false when Content-Type header is missing', function () {
+      const transaction = buildTransaction({ isa: true }, undefined)
+      assert.equal(this.plugin.extractBounceResult(transaction), false)
+    })
+
+    it('returns false for an MDN read-receipt (disposition-notification)', function () {
+      const transaction = buildTransaction(
+        { isa: true },
+        'multipart/report; report-type=disposition-notification',
+      )
+      assert.equal(this.plugin.extractBounceResult(transaction), false)
+    })
+
     it('returns false when haraka-plugin-bounce did not flag the transaction', function () {
-      const transaction = { results: { get: () => ({ isa: false }) } }
+      const transaction = buildTransaction(
+        { isa: false },
+        'multipart/report; report-type=delivery-status',
+      )
       assert.equal(this.plugin.extractBounceResult(transaction), false)
     })
 
     it('returns false when haraka-plugin-bounce is not installed', function () {
-      const transaction = { results: { get: () => undefined } }
+      const transaction = buildTransaction(
+        undefined,
+        'multipart/report; report-type=delivery-status',
+      )
       assert.equal(this.plugin.extractBounceResult(transaction), false)
+    })
+  })
+
+  describe('isDeliveryStatusReport', function () {
+    it('matches a folded, quoted, mixed-case Content-Type', function () {
+      const transaction = buildTransaction(
+        undefined,
+        'Multipart/Report;\n\treport-type="delivery-status";\n\tboundary="abc"',
+      )
+      assert.equal(this.plugin.isDeliveryStatusReport(transaction), true)
+    })
+
+    it('does not match multipart/report without delivery-status report-type', function () {
+      const transaction = buildTransaction(undefined, 'multipart/report')
+      assert.equal(this.plugin.isDeliveryStatusReport(transaction), false)
+    })
+
+    it('returns false when the header is missing', function () {
+      const transaction = buildTransaction(undefined, undefined)
+      assert.equal(this.plugin.isDeliveryStatusReport(transaction), false)
     })
   })
 
