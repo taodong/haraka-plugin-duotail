@@ -169,9 +169,7 @@ exports.isDeliveryStatusReport = function (transaction) {
   const mediaType = normalized.split(';', 1)[0].trim()
   return (
     mediaType === 'multipart/report' &&
-    /(?:^|;)\s*report-type\s*=\s*"?delivery-status"?\s*(?:;|$)/.test(
-      normalized,
-    )
+    /(?:^|;)\s*report-type\s*=\s*"?delivery-status"?\s*(?:;|$)/.test(normalized)
   )
 }
 
