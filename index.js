@@ -154,7 +154,23 @@ exports.extractDkimResult = function (authResults) {
 }
 
 exports.extractBounceResult = function (transaction) {
-  return transaction?.results?.get?.('bounce')?.isa === true
+  const isa = transaction?.results?.get?.('bounce')?.isa === true
+  return isa && exports.isDeliveryStatusReport(transaction)
+}
+
+// A genuine bounce/DSN (RFC 3462/3464) carries
+// `Content-Type: multipart/report; report-type=delivery-status`. Requiring this
+// avoids false-flagging RFC 3834 auto-responders (vacation/out-of-office), which
+// also use a null return-path. MDN read-receipts (report-type=disposition-notification)
+// are intentionally excluded.
+exports.isDeliveryStatusReport = function (transaction) {
+  const contentType = transaction?.header?.get?.('Content-Type') ?? ''
+  const normalized = contentType.replace(/\s+/g, ' ').trim().toLowerCase()
+  const mediaType = normalized.split(';', 1)[0].trim()
+  return (
+    mediaType === 'multipart/report' &&
+    /(?:^|;)\s*report-type\s*=\s*"?delivery-status"?\s*(?:;|$)/.test(normalized)
+  )
 }
 
 exports.createHazelcastStream = function (map, key) {
