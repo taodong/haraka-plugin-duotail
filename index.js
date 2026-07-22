@@ -154,7 +154,13 @@ exports.extractDkimResult = function (authResults) {
 }
 
 exports.extractBounceResult = function (transaction) {
-  const isa = transaction?.results?.get?.('bounce')?.isa === 'yes'
+  // haraka-plugin-bounce records its null-sender verdict under the `isa` key.
+  // The representation varies by version: 2.2.x stores `mail_from.isNull()`,
+  // which is the number 1 (bounce) or 0; some builds use a boolean; older
+  // versions used the string 'yes'/'no'. Treat any bounce-positive form as a
+  // bounce and everything else (0/false/'no'/undefined) as not.
+  const rawIsa = transaction?.results?.get?.('bounce')?.isa
+  const isa = rawIsa === 1 || rawIsa === true || rawIsa === 'yes'
   return isa && exports.isDeliveryStatusReport(transaction)
 }
 

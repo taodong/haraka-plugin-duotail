@@ -73,45 +73,45 @@ describe('duotail', function () {
   })
 
   describe('extractBounceResult', function () {
-    it('returns true when flagged and Content-Type is a delivery-status report', function () {
-      const transaction = buildTransaction(
-        { isa: 'yes' },
-        'multipart/report; report-type=delivery-status',
-      )
-      assert.equal(this.plugin.extractBounceResult(transaction), true)
-    })
+    const dsrContentType = 'multipart/report; report-type=delivery-status'
+
+    // haraka-plugin-bounce 2.2.x stores isa as mail_from.isNull() (number 1),
+    // older/other versions use boolean true or the string 'yes'. All are bounces.
+    for (const isa of [1, true, 'yes']) {
+      it(`returns true when flagged (isa=${JSON.stringify(isa)}) and Content-Type is a delivery-status report`, function () {
+        const transaction = buildTransaction({ isa }, dsrContentType)
+        assert.equal(this.plugin.extractBounceResult(transaction), true)
+      })
+    }
 
     it('returns false for an auto-responder (null sender but text/plain)', function () {
-      const transaction = buildTransaction({ isa: 'yes' }, 'text/plain')
+      const transaction = buildTransaction({ isa: 1 }, 'text/plain')
       assert.equal(this.plugin.extractBounceResult(transaction), false)
     })
 
     it('returns false when Content-Type header is missing', function () {
-      const transaction = buildTransaction({ isa: 'yes' }, undefined)
+      const transaction = buildTransaction({ isa: 1 }, undefined)
       assert.equal(this.plugin.extractBounceResult(transaction), false)
     })
 
     it('returns false for an MDN read-receipt (disposition-notification)', function () {
       const transaction = buildTransaction(
-        { isa: 'yes' },
+        { isa: 1 },
         'multipart/report; report-type=disposition-notification',
       )
       assert.equal(this.plugin.extractBounceResult(transaction), false)
     })
 
-    it('returns false when haraka-plugin-bounce did not flag the transaction', function () {
-      const transaction = buildTransaction(
-        { isa: 'no' },
-        'multipart/report; report-type=delivery-status',
-      )
-      assert.equal(this.plugin.extractBounceResult(transaction), false)
-    })
+    // isNull() returns 0 for a real sender; 'no'/false are the older equivalents.
+    for (const isa of [0, false, 'no']) {
+      it(`returns false when haraka-plugin-bounce did not flag it (isa=${JSON.stringify(isa)})`, function () {
+        const transaction = buildTransaction({ isa }, dsrContentType)
+        assert.equal(this.plugin.extractBounceResult(transaction), false)
+      })
+    }
 
     it('returns false when haraka-plugin-bounce is not installed', function () {
-      const transaction = buildTransaction(
-        undefined,
-        'multipart/report; report-type=delivery-status',
-      )
+      const transaction = buildTransaction(undefined, dsrContentType)
       assert.equal(this.plugin.extractBounceResult(transaction), false)
     })
   })
