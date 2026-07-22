@@ -154,7 +154,7 @@ exports.extractDkimResult = function (authResults) {
 }
 
 exports.extractBounceResult = function (transaction) {
-  const isa = transaction?.results?.get?.('bounce')?.isa === true
+  const isa = transaction?.results?.get?.('bounce')?.isa === 'yes'
   return isa && exports.isDeliveryStatusReport(transaction)
 }
 

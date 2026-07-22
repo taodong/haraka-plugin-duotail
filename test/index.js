@@ -75,25 +75,25 @@ describe('duotail', function () {
   describe('extractBounceResult', function () {
     it('returns true when flagged and Content-Type is a delivery-status report', function () {
       const transaction = buildTransaction(
-        { isa: true },
+        { isa: 'yes' },
         'multipart/report; report-type=delivery-status',
       )
       assert.equal(this.plugin.extractBounceResult(transaction), true)
     })
 
     it('returns false for an auto-responder (null sender but text/plain)', function () {
-      const transaction = buildTransaction({ isa: true }, 'text/plain')
+      const transaction = buildTransaction({ isa: 'yes' }, 'text/plain')
       assert.equal(this.plugin.extractBounceResult(transaction), false)
     })
 
     it('returns false when Content-Type header is missing', function () {
-      const transaction = buildTransaction({ isa: true }, undefined)
+      const transaction = buildTransaction({ isa: 'yes' }, undefined)
       assert.equal(this.plugin.extractBounceResult(transaction), false)
     })
 
     it('returns false for an MDN read-receipt (disposition-notification)', function () {
       const transaction = buildTransaction(
-        { isa: true },
+        { isa: 'yes' },
         'multipart/report; report-type=disposition-notification',
       )
       assert.equal(this.plugin.extractBounceResult(transaction), false)
@@ -101,7 +101,7 @@ describe('duotail', function () {
 
     it('returns false when haraka-plugin-bounce did not flag the transaction', function () {
       const transaction = buildTransaction(
-        { isa: false },
+        { isa: 'no' },
         'multipart/report; report-type=delivery-status',
       )
       assert.equal(this.plugin.extractBounceResult(transaction), false)
