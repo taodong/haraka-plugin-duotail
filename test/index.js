@@ -67,72 +67,209 @@ describe('duotail', function () {
     })
   })
 
-  const buildTransaction = (isaResult, contentType) => ({
-    results: { get: () => isaResult },
-    header: { get: () => contentType },
+  // A minimal MIME part: content type plus optional decoded text and children.
+  const part = (ct, { bodytext = '', children = [] } = {}) => ({
+    ct,
+    bodytext,
+    children,
   })
 
-  describe('extractBounceResult', function () {
-    const dsrContentType = 'multipart/report; report-type=delivery-status'
-
-    // haraka-plugin-bounce 2.2.x stores isa as mail_from.isNull() (number 1),
-    // older/other versions use boolean true or the string 'yes'. All are bounces.
-    for (const isa of [1, true, 'yes']) {
-      it(`returns true when flagged (isa=${JSON.stringify(isa)}) and Content-Type is a delivery-status report`, function () {
-        const transaction = buildTransaction({ isa }, dsrContentType)
-        assert.equal(this.plugin.extractBounceResult(transaction), true)
-      })
+  // A transaction double. mail_from exposes isNull() like Haraka's Address;
+  // headers is a plain map of header name -> value.
+  const buildTransaction = ({
+    nullSender = false,
+    body = null,
+    headers = {},
+  } = {}) => {
+    const lookup = {}
+    for (const [k, v] of Object.entries(headers)) lookup[k.toLowerCase()] = v
+    return {
+      mail_from: { isNull: () => nullSender },
+      body,
+      header: { get: (name) => lookup[String(name).toLowerCase()] },
     }
+  }
 
-    it('returns false for an auto-responder (null sender but text/plain)', function () {
-      const transaction = buildTransaction({ isa: 1 }, 'text/plain')
-      assert.equal(this.plugin.extractBounceResult(transaction), false)
+  const deliveryStatus = (statusText) =>
+    part('multipart/report; report-type=delivery-status', {
+      children: [
+        part('text/plain', {
+          bodytext: 'Your message could not be delivered.',
+        }),
+        part('message/delivery-status', {
+          bodytext: `Reporting-MTA: dns; mail.example.com\n\nFinal-Recipient: rfc822; user@example.com\nAction: failed\n${statusText}\n`,
+        }),
+        part('message/rfc822', {
+          bodytext: 'Status: 2.0.0 (decoy in original)',
+        }),
+      ],
     })
 
-    it('returns false when Content-Type header is missing', function () {
-      const transaction = buildTransaction({ isa: 1 }, undefined)
-      assert.equal(this.plugin.extractBounceResult(transaction), false)
+  describe('classifyInbound', function () {
+    it('classifies a hard bounce (5.x.x) as DSN with the status code', function () {
+      const transaction = buildTransaction({
+        nullSender: true,
+        body: deliveryStatus('Status: 5.1.1'),
+      })
+      assert.deepEqual(this.plugin.classifyInbound(transaction), {
+        inboundType: 'DSN',
+        bounceStatus: '5.1.1',
+      })
     })
 
-    it('returns false for an MDN read-receipt (disposition-notification)', function () {
-      const transaction = buildTransaction(
-        { isa: 1 },
+    it('classifies a soft bounce (4.x.x) as DSN with the status code', function () {
+      const transaction = buildTransaction({
+        nullSender: true,
+        body: deliveryStatus('Status: 4.4.1'),
+      })
+      assert.deepEqual(this.plugin.classifyInbound(transaction), {
+        inboundType: 'DSN',
+        bounceStatus: '4.4.1',
+      })
+    })
+
+    it('classifies a success DSN (2.x.x) as DSN, not a bounce', function () {
+      const transaction = buildTransaction({
+        nullSender: true,
+        body: deliveryStatus('Status: 2.0.0'),
+      })
+      assert.deepEqual(this.plugin.classifyInbound(transaction), {
+        inboundType: 'DSN',
+        bounceStatus: '2.0.0',
+      })
+    })
+
+    it('reads Status only from the delivery-status part, ignoring the embedded original', function () {
+      const transaction = buildTransaction({
+        nullSender: true,
+        body: deliveryStatus('Status: 5.7.1'),
+      })
+      assert.equal(
+        this.plugin.classifyInbound(transaction).bounceStatus,
+        '5.7.1',
+      )
+    })
+
+    it('returns DSN with null status when the code is unparseable (malformed DSN)', function () {
+      const body = part('multipart/report; report-type=delivery-status', {
+        children: [
+          part('message/delivery-status', { bodytext: 'Action: failed\n' }),
+        ],
+      })
+      const transaction = buildTransaction({ nullSender: true, body })
+      assert.deepEqual(this.plugin.classifyInbound(transaction), {
+        inboundType: 'DSN',
+        bounceStatus: null,
+      })
+    })
+
+    it('is not a DSN when the delivery-status part exists but the sender is not null', function () {
+      const transaction = buildTransaction({
+        nullSender: false,
+        body: deliveryStatus('Status: 5.1.1'),
+      })
+      assert.equal(
+        this.plugin.classifyInbound(transaction).inboundType,
+        'NORMAL',
+      )
+    })
+
+    it('classifies a disposition-notification report as MDN', function () {
+      const body = part(
         'multipart/report; report-type=disposition-notification',
+        {
+          children: [
+            part('message/disposition-notification', { bodytext: '' }),
+          ],
+        },
       )
-      assert.equal(this.plugin.extractBounceResult(transaction), false)
+      const transaction = buildTransaction({ body })
+      assert.deepEqual(this.plugin.classifyInbound(transaction), {
+        inboundType: 'MDN',
+        bounceStatus: null,
+      })
     })
 
-    // isNull() returns 0 for a real sender; 'no'/false are the older equivalents.
-    for (const isa of [0, false, 'no']) {
-      it(`returns false when haraka-plugin-bounce did not flag it (isa=${JSON.stringify(isa)})`, function () {
-        const transaction = buildTransaction({ isa }, dsrContentType)
-        assert.equal(this.plugin.extractBounceResult(transaction), false)
+    it('classifies Auto-Submitted: auto-replied as AUTO_REPLY (even with a null sender)', function () {
+      const transaction = buildTransaction({
+        nullSender: true,
+        headers: { 'Auto-Submitted': 'auto-replied' },
+      })
+      assert.deepEqual(this.plugin.classifyInbound(transaction), {
+        inboundType: 'AUTO_REPLY',
+        bounceStatus: null,
+      })
+    })
+
+    it('parses Auto-Submitted with parameters (auto-replied; ...)', function () {
+      const transaction = buildTransaction({
+        headers: { 'Auto-Submitted': 'auto-replied; charset=utf-8' },
+      })
+      assert.equal(
+        this.plugin.classifyInbound(transaction).inboundType,
+        'AUTO_REPLY',
+      )
+    })
+
+    for (const h of ['X-Autoreply', 'X-Autorespond']) {
+      it(`classifies vendor header ${h} as AUTO_REPLY`, function () {
+        const transaction = buildTransaction({ headers: { [h]: 'yes' } })
+        assert.equal(
+          this.plugin.classifyInbound(transaction).inboundType,
+          'AUTO_REPLY',
+        )
       })
     }
 
-    it('returns false when haraka-plugin-bounce is not installed', function () {
-      const transaction = buildTransaction(undefined, dsrContentType)
-      assert.equal(this.plugin.extractBounceResult(transaction), false)
-    })
-  })
-
-  describe('isDeliveryStatusReport', function () {
-    it('matches a folded, quoted, mixed-case Content-Type', function () {
-      const transaction = buildTransaction(
-        undefined,
-        'Multipart/Report;\n\treport-type="delivery-status";\n\tboundary="abc"',
+    it('classifies Auto-Submitted: auto-generated as AUTO_GENERATED', function () {
+      const transaction = buildTransaction({
+        headers: { 'Auto-Submitted': 'auto-generated' },
+      })
+      assert.equal(
+        this.plugin.classifyInbound(transaction).inboundType,
+        'AUTO_GENERATED',
       )
-      assert.equal(this.plugin.isDeliveryStatusReport(transaction), true)
     })
 
-    it('does not match multipart/report without delivery-status report-type', function () {
-      const transaction = buildTransaction(undefined, 'multipart/report')
-      assert.equal(this.plugin.isDeliveryStatusReport(transaction), false)
+    for (const p of ['bulk', 'list', 'junk']) {
+      it(`classifies Precedence: ${p} as AUTO_GENERATED`, function () {
+        const transaction = buildTransaction({ headers: { Precedence: p } })
+        assert.equal(
+          this.plugin.classifyInbound(transaction).inboundType,
+          'AUTO_GENERATED',
+        )
+      })
+    }
+
+    it('does not classify X-Auto-Response-Suppress as automated (directive, not marker)', function () {
+      const transaction = buildTransaction({
+        headers: { 'X-Auto-Response-Suppress': 'OOF, AutoReply' },
+      })
+      assert.equal(
+        this.plugin.classifyInbound(transaction).inboundType,
+        'NORMAL',
+      )
     })
 
-    it('returns false when the header is missing', function () {
-      const transaction = buildTransaction(undefined, undefined)
-      assert.equal(this.plugin.isDeliveryStatusReport(transaction), false)
+    it('classifies ordinary mail as NORMAL', function () {
+      const transaction = buildTransaction({
+        body: part('text/plain', { bodytext: 'hello' }),
+        headers: { From: 'a@b.com' },
+      })
+      assert.deepEqual(this.plugin.classifyInbound(transaction), {
+        inboundType: 'NORMAL',
+        bounceStatus: null,
+      })
+    })
+
+    it('classifies an auto-reply ahead of a bulk Precedence', function () {
+      const transaction = buildTransaction({
+        headers: { 'Auto-Submitted': 'auto-replied', Precedence: 'bulk' },
+      })
+      assert.equal(
+        this.plugin.classifyInbound(transaction).inboundType,
+        'AUTO_REPLY',
+      )
     })
   })
 

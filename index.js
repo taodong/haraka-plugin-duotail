@@ -10,7 +10,14 @@ exports.register = function () {
   plugin.load_duotail_ini()
 
   // register hooks here. More info at https://haraka.github.io/core/Plugins/
+  // Enable MIME body parsing so cache_and_save can inspect DSN/MDN report parts.
+  plugin.register_hook('data', 'enable_body_parsing')
   plugin.register_hook('queue', 'cache_and_save')
+}
+
+exports.enable_body_parsing = function (next, connection) {
+  if (connection?.transaction) connection.transaction.parse_body = true
+  next()
 }
 
 exports.cache_and_save = function (next, connection) {
@@ -22,7 +29,9 @@ exports.cache_and_save = function (next, connection) {
 
   const spfCheck = plugin.etractSpfResult(authResults)
   const dkimCheck = plugin.extractDkimResult(authResults)
-  const isBounce = plugin.extractBounceResult(connection.transaction)
+  const { inboundType, bounceStatus } = plugin.classifyInbound(
+    connection.transaction,
+  )
 
   if (plugin.cfg.main.enabled) {
     const { transaction, remote, hello } = connection
@@ -53,7 +62,8 @@ exports.cache_and_save = function (next, connection) {
       inReplyTo,
       spfCheck,
       dkimCheck,
-      isBounce,
+      inboundType,
+      bounceStatus,
       incomingId,
     }
 
@@ -153,30 +163,118 @@ exports.extractDkimResult = function (authResults) {
     : 'fail'
 }
 
-exports.extractBounceResult = function (transaction) {
-  // haraka-plugin-bounce records its null-sender verdict under the `isa` key.
-  // The representation varies by version: 2.2.x stores `mail_from.isNull()`,
-  // which is the number 1 (bounce) or 0; some builds use a boolean; older
-  // versions used the string 'yes'/'no'. Treat any bounce-positive form as a
-  // bounce and everything else (0/false/'no'/undefined) as not.
-  const rawIsa = transaction?.results?.get?.('bounce')?.isa
-  const isa = rawIsa === 1 || rawIsa === true || rawIsa === 'yes'
-  return isa && exports.isDeliveryStatusReport(transaction)
+// Classify an inbound message into one of five types and, for delivery-status
+// reports, extract the RFC 3463 status code. See docs/design/message-classification.md.
+// Rules are evaluated in order; the first match wins.
+//   1. DSN            — null envelope sender + a message/delivery-status part
+//   2. MDN            — a message/disposition-notification part
+//   3. AUTO_REPLY     — Auto-Submitted: auto-replied, or X-Autoreply/X-Autorespond
+//   4. AUTO_GENERATED — Auto-Submitted: auto-generated, or Precedence bulk/list/junk
+//   5. NORMAL         — otherwise
+exports.classifyInbound = function (transaction) {
+  const body = transaction?.body
+
+  // 1. DSN (RFC 3464/3463): a genuine delivery-status report always carries a
+  // null return-path AND a machine-readable message/delivery-status part.
+  if (
+    exports.isNullSender(transaction) &&
+    exports.findMimePart(body, 'message/delivery-status')
+  ) {
+    return {
+      inboundType: 'DSN',
+      bounceStatus: exports.extractDsnStatus(
+        exports.findMimePart(body, 'message/delivery-status'),
+      ),
+    }
+  }
+
+  // 2. MDN (RFC 8098): read-receipt / disposition notification.
+  if (exports.findMimePart(body, 'message/disposition-notification')) {
+    return { inboundType: 'MDN', bounceStatus: null }
+  }
+
+  const autoSubmitted = exports.headerToken(transaction, 'Auto-Submitted')
+
+  // 3. AUTO_REPLY (RFC 3834). The envelope sender is intentionally not tested —
+  // a null return-path is normal for an out-of-office reply (RFC 3834 §4).
+  if (
+    autoSubmitted === 'auto-replied' ||
+    exports.hasHeader(transaction, 'X-Autoreply') ||
+    exports.hasHeader(transaction, 'X-Autorespond')
+  ) {
+    return { inboundType: 'AUTO_REPLY', bounceStatus: null }
+  }
+
+  // 4. AUTO_GENERATED. X-Auto-Response-Suppress is deliberately excluded: it is a
+  // sender directive ("do not auto-respond to me"), not an auto-reply marker.
+  const precedence = exports.headerValue(transaction, 'Precedence')
+  if (
+    autoSubmitted === 'auto-generated' ||
+    ['bulk', 'list', 'junk'].includes(precedence)
+  ) {
+    return { inboundType: 'AUTO_GENERATED', bounceStatus: null }
+  }
+
+  // 5. NORMAL
+  return { inboundType: 'NORMAL', bounceStatus: null }
 }
 
-// A genuine bounce/DSN (RFC 3462/3464) carries
-// `Content-Type: multipart/report; report-type=delivery-status`. Requiring this
-// avoids false-flagging RFC 3834 auto-responders (vacation/out-of-office), which
-// also use a null return-path. MDN read-receipts (report-type=disposition-notification)
-// are intentionally excluded.
-exports.isDeliveryStatusReport = function (transaction) {
-  const contentType = transaction?.header?.get?.('Content-Type') ?? ''
-  const normalized = contentType.replace(/\s+/g, ' ').trim().toLowerCase()
-  const mediaType = normalized.split(';', 1)[0].trim()
-  return (
-    mediaType === 'multipart/report' &&
-    /(?:^|;)\s*report-type\s*=\s*"?delivery-status"?\s*(?:;|$)/.test(normalized)
-  )
+// True when the envelope MAIL FROM is null ("<>"). Reads the address directly,
+// removing the need for haraka-plugin-bounce's `isa` verdict.
+exports.isNullSender = function (transaction) {
+  const mailFrom = transaction?.mail_from
+  if (!mailFrom) return false
+  if (typeof mailFrom.isNull === 'function') return mailFrom.isNull()
+  // Fallback for plain-object test doubles.
+  if (mailFrom.original !== undefined) {
+    return mailFrom.original === '' || mailFrom.original === '<>'
+  }
+  return !mailFrom.user && !mailFrom.host
+}
+
+// The media type (lower-cased, parameters stripped) of a MIME part's Content-Type.
+exports.mediaType = function (contentType) {
+  return String(contentType || '')
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase()
+}
+
+// Depth-first search of the parsed MIME tree for a part whose media type matches.
+exports.findMimePart = function (body, mediaType) {
+  if (!body) return null
+  if (exports.mediaType(body.ct) === mediaType) return body
+  for (const child of body.children ?? []) {
+    const found = exports.findMimePart(child, mediaType)
+    if (found) return found
+  }
+  return null
+}
+
+// Extract the RFC 3463 status code (e.g. "5.1.1") from a message/delivery-status
+// part. Reads only that part's text so a matching string in the embedded original
+// message cannot cause a false positive. Returns null when absent/unparseable.
+exports.extractDsnStatus = function (part) {
+  const text = part?.bodytext ?? ''
+  const match = text.match(/^Status:\s*(\d\.\d{1,3}\.\d{1,3})/im)
+  return match ? match[1] : null
+}
+
+// Normalized header value: whitespace collapsed, trimmed, lower-cased.
+exports.headerValue = function (transaction, name) {
+  const raw = transaction?.header?.get?.(name) ?? ''
+  return String(raw).replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+// First token of a structured header value (the part before any ";" parameters).
+exports.headerToken = function (transaction, name) {
+  return exports.headerValue(transaction, name).split(';', 1)[0].trim()
+}
+
+// True when a header is present with a non-empty value.
+exports.hasHeader = function (transaction, name) {
+  const raw = transaction?.header?.get?.(name)
+  return raw !== undefined && String(raw).trim() !== ''
 }
 
 exports.createHazelcastStream = function (map, key) {
