@@ -176,15 +176,11 @@ exports.classifyInbound = function (transaction) {
 
   // 1. DSN (RFC 3464/3463): a genuine delivery-status report always carries a
   // null return-path AND a machine-readable message/delivery-status part.
-  if (
-    exports.isNullSender(transaction) &&
-    exports.findMimePart(body, 'message/delivery-status')
-  ) {
+  const dsnPart = exports.findMimePart(body, 'message/delivery-status')
+  if (exports.isNullSender(transaction) && dsnPart) {
     return {
       inboundType: 'DSN',
-      bounceStatus: exports.extractDsnStatus(
-        exports.findMimePart(body, 'message/delivery-status'),
-      ),
+      bounceStatus: exports.extractDsnStatus(dsnPart),
     }
   }
 
