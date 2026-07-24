@@ -16,7 +16,9 @@ exports.register = function () {
 }
 
 exports.enable_body_parsing = function (next, connection) {
-  if (connection?.transaction) connection.transaction.parse_body = true
+  if (this?.cfg?.main?.enabled && connection?.transaction) {
+    connection.transaction.parse_body = true
+  }
   next()
 }
 
