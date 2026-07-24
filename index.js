@@ -164,7 +164,7 @@ exports.extractDkimResult = function (authResults) {
 }
 
 // Classify an inbound message into one of five types and, for delivery-status
-// reports, extract the RFC 3463 status code. See docs/design/message-classification.md.
+// reports, extract the RFC 3463 status code. See README.md#inbound-message-classification.
 // Rules are evaluated in order; the first match wins.
 //   1. DSN            — null envelope sender + a message/delivery-status part
 //   2. MDN            — a message/disposition-notification part
