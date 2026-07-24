@@ -31,12 +31,10 @@ exports.cache_and_save = function (next, connection) {
 
   const spfCheck = plugin.etractSpfResult(authResults)
   const dkimCheck = plugin.extractDkimResult(authResults)
-  const { inboundType, bounceStatus } = plugin.classifyInbound(
-    connection.transaction,
-  )
 
   if (plugin.cfg.main.enabled) {
     const { transaction, remote, hello } = connection
+    const { inboundType, bounceStatus } = plugin.classifyInbound(transaction)
     const mailFrom = transaction.mail_from
     const rcptTo = transaction.rcpt_to
     const remoteIp = remote.ip
