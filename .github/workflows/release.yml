@@ -22,9 +22,12 @@ jobs:
                 node-version: 24
                 registry-url: "https://registry.npmjs.org"
 
-            # Trusted publishing requires npm >= 11.5.1
+            # Trusted publishing requires npm >= 11.5.1. Pinned to a major
+            # rather than @latest so a new major cannot change install
+            # behaviour underneath us (npm 12 blocks dependency lifecycle
+            # scripts by default; see "allowScripts" in package.json).
             - name: Update npm
-              run: npm install -g npm@latest
+              run: npm install -g npm@12
 
             - name: Install Node.js dependencies
               run: npm ci
