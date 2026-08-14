@@ -15,12 +15,12 @@ jobs:
 
     steps:
       - name: Check out Git repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 23
+          node-version: 24
 
       # ESLint and Prettier must be in `package.json`
       - name: Install Node.js dependencies
