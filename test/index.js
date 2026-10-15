@@ -75,7 +75,8 @@ describe('duotail', function () {
   })
 
   // A transaction double. mail_from exposes isNull() like Haraka's Address;
-  // headers is a plain map of header name -> value.
+  // headers is a plain map of header name -> value, or an array of values for a
+  // repeated header. Like Haraka, get joins repeated values with "\n".
   const buildTransaction = ({
     nullSender = false,
     body = null,
@@ -86,7 +87,17 @@ describe('duotail', function () {
     return {
       mail_from: { isNull: () => nullSender },
       body,
-      header: { get: (name) => lookup[String(name).toLowerCase()] },
+      header: {
+        get_all: (name) => {
+          const value = lookup[String(name).toLowerCase()]
+          if (value === undefined) return []
+          return Array.isArray(value) ? value : [value]
+        },
+        get(name) {
+          const values = this.get_all(name)
+          return values.length ? values.join('\n') : undefined
+        },
+      },
     }
   }
 
@@ -439,8 +450,22 @@ describe('duotail', function () {
       // An attacker can prepend an unsigned From to a replayed signed message.
       assert.equal(
         this.plugin.parseHeaderFrom(
-          withFrom('postmaster@duotail.com\n1_attacker@duotail.com\n'),
+          withFrom(['1_attacker@duotail.com\n', 'postmaster@duotail.com\n']),
         ),
+        null,
+      )
+    })
+
+    it('returns null when an empty From header follows a real one', function () {
+      assert.equal(
+        this.plugin.parseHeaderFrom(withFrom(['a@b.com\n', ''])),
+        null,
+      )
+    })
+
+    it('returns null when an empty From header precedes a real one', function () {
+      assert.equal(
+        this.plugin.parseHeaderFrom(withFrom(['', 'a@b.com\n'])),
         null,
       )
     })
@@ -499,8 +524,6 @@ describe('duotail', function () {
         'Message-ID': '<id-1@example.com>\n',
       }
       const transaction = buildTransaction({ headers })
-      transaction.header.get_all = (name) =>
-        headers[name] === undefined ? [] : [headers[name]]
       transaction.notes = {
         get: () => ({
           spf: { status: { result: 'pass' } },

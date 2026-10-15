@@ -185,22 +185,22 @@ exports.extractDkimDomains = function (authResults) {
 // verbatim from the header, so a quoted local part keeps its quotes and spacing. A From
 // field may list several mailboxes or a group; the first mailbox wins. Null when the
 // header is absent, unparseable, or its address is not a valid RFC 5321 mailbox.
-// Haraka keeps folded lines as "\n " and joins repeated From headers with "\n", so the
-// value is unfolded (RFC 5322 §2.2.3) first. A message with more than one From header
-// yields null: a DKIM signature covers only the bottom-most From, so an extra From
-// prepended to a replayed signed message must never become the sender.
+// A message with more than one From header, even an empty one, yields null: a DKIM
+// signature covers only the bottom-most From, so an extra From prepended to a replayed
+// signed message must never become the sender. Instances are counted with get_all,
+// because get joins them with "\n" and an empty one leaves only a blank line. Haraka
+// keeps folded lines as "\n ", so the value is unfolded (RFC 5322 §2.2.3) first.
 exports.parseHeaderFrom = function (transaction) {
-  const raw = transaction?.header?.get?.('From')
-  const headers = String(raw ?? '')
+  const instances = transaction?.header?.get_all?.('From') ?? []
+  if (instances.length !== 1) return null
+  const value = String(instances[0] ?? '')
     .replace(/\r?\n(?=[ \t])/g, '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line)
-  if (headers.length !== 1) return null
+    .trim()
+  if (!value) return null
 
   // Same parser options address-rfc2822 uses, which discards the raw local part.
   const parsed = parseAddresses({
-    input: headers[0],
+    input: value,
     rfc6532: true,
     partial: false,
     simple: false,
