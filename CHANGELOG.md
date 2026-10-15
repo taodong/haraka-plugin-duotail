@@ -22,8 +22,10 @@ Set incoming email header 'Message-ID' value as 'incomingId' in Kafka payload
 
 Fix double sending issue of remote mail server sending email through multiple connections
 
-## [Unreleased]
+## [1.1.0] - 2026-08-13
 
 Replaced the boolean `isBounce` Kafka field with `inboundType` (`DSN` / `MDN` / `AUTO_REPLY` / `AUTO_GENERATED` / `NORMAL`) and an RFC 3463 `bounceStatus` code so downstream can distinguish soft, hard, and success delivery-status reports. DSN detection now reads the null envelope sender directly (dropping the `haraka-plugin-bounce` dependency) and parses the `Status:` field from the `message/delivery-status` part; body parsing is enabled on the `data` hook. Bump `messageVersion` before deploying.
+
+## [1.2.0] - 2026-10-15
 
 Added `headerFrom` (first mailbox of the `From` header, parsed with `address-rfc2822`) and `dkimDomains` (the `d=` domains of every passing DKIM signature) to the Kafka payload. Both fields are additive and optional for consumers.
