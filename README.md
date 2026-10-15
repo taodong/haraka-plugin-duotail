@@ -25,6 +25,17 @@ Each queued message is classified into an `inboundType` and, for delivery-status
 
 The null-sender check reads the envelope address directly, so `haraka-plugin-bounce` is no longer required. Body parsing is enabled on the `data` hook so the report parts are available at queue time.
 
+## Sender fields
+
+Besides the envelope sender (`mailFrom`), the Kafka summary carries two sender fields:
+
+| Field | Value |
+| --- | --- |
+| `headerFrom` | The first mailbox of the `From` header, in the same shape as `mailFrom` (`original`, `original_host`, `host`, `user`), or `null` when the header is missing or unparseable. A group's first member counts as its mailbox. |
+| `dkimDomains` | The lower-cased, de-duplicated `d=` domains of every DKIM signature that verified, or `[]`. `dkimCheck` stays `pass` when any of them passed. |
+
+Both fields are additive. Consumers that don't know them ignore them.
+
 When the Kafka message schema changes (for example, replacing `isBounce` with `inboundType`/`bounceStatus`), bump `messageVersion` in `config/duotail.ini` so downstream consumers can safely branch on the schema version.
 
 ## INSTALL

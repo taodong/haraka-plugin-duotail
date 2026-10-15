@@ -1,5 +1,6 @@
 'use strict'
 
+const addressParser = require('address-rfc2822')
 const { Kafka, logLevel } = require('kafkajs')
 const { Client } = require('hazelcast-client')
 const { Writable } = require('stream')
@@ -31,6 +32,7 @@ exports.cache_and_save = function (next, connection) {
 
   const spfCheck = plugin.etractSpfResult(authResults)
   const dkimCheck = plugin.extractDkimResult(authResults)
+  const dkimDomains = plugin.extractDkimDomains(authResults)
 
   if (plugin.cfg.main.enabled) {
     const { transaction, remote, hello } = connection
@@ -47,6 +49,7 @@ exports.cache_and_save = function (next, connection) {
     const emailId = plugin.generateId()
     const fromHeader = transaction.header.get('From').replace(/\n+$/, '')
     const senderName = fromHeader.replace(/<[^>]*>/g, '').trim()
+    const headerFrom = plugin.parseHeaderFrom(transaction)
     const inReplyTo = transaction.header.get('In-Reply-To').replace(/\n+$/, '')
     const incomingId = transaction.header.get('Message-ID').replace(/\n+$/, '')
 
@@ -65,6 +68,8 @@ exports.cache_and_save = function (next, connection) {
       inboundType,
       bounceStatus,
       incomingId,
+      headerFrom,
+      dkimDomains,
     }
 
     const kMessage = {
@@ -161,6 +166,51 @@ exports.extractDkimResult = function (authResults) {
   return results.some((item) => item?.status?.result === 'pass')
     ? 'pass'
     : 'fail'
+}
+
+// The signing domains (d=) of every DKIM signature that verified, lower-cased and
+// de-duplicated. Downstream uses them to tell which domain vouched for the message;
+// dkimCheck alone only says that some signature passed.
+exports.extractDkimDomains = function (authResults) {
+  const results = authResults?.dkim?.results ?? []
+  const domains = results
+    .filter((item) => item?.status?.result === 'pass' && item?.signingDomain)
+    .map((item) => String(item.signingDomain).trim().toLowerCase())
+  return [...new Set(domains)]
+}
+
+// The first mailbox of the From header, shaped like Haraka's mail_from/rcpt_to JSON so
+// the collector deserializes it as a Contact. A From field may list several mailboxes
+// or a group; the first mailbox wins. Null when the header is absent or unparseable.
+exports.parseHeaderFrom = function (transaction) {
+  const raw = transaction?.header?.get?.('From')
+  const value = String(raw ?? '')
+    .replace(/\n+$/, '')
+    .trim()
+  if (!value) return null
+
+  let parsed
+  try {
+    parsed = addressParser.parse(value)
+  } catch {
+    return null
+  }
+
+  const mailbox = parsed
+    .flatMap((entry) => (entry?.addresses ? entry.addresses : [entry]))
+    .find((entry) => entry?.address)
+  if (!mailbox) return null
+
+  const user = mailbox.user()
+  const host = mailbox.host()
+  if (!user || !host) return null
+
+  return {
+    original: `<${mailbox.address}>`,
+    original_host: host,
+    host: host.toLowerCase(),
+    user,
+  }
 }
 
 // Classify an inbound message into one of five types and, for delivery-status

@@ -273,6 +273,219 @@ describe('duotail', function () {
     })
   })
 
+  describe('extractDkimDomains', function () {
+    const sig = (signingDomain, result) => ({
+      signingDomain,
+      status: { result },
+    })
+
+    it('returns an empty list when there are no results', function () {
+      assert.deepEqual(this.plugin.extractDkimDomains(undefined), [])
+      assert.deepEqual(this.plugin.extractDkimDomains({}), [])
+      assert.deepEqual(
+        this.plugin.extractDkimDomains({ dkim: { results: [] } }),
+        [],
+      )
+    })
+
+    it('returns an empty list when mailauth stored an error', function () {
+      assert.deepEqual(
+        this.plugin.extractDkimDomains({ dkim: { error: new Error('boom') } }),
+        [],
+      )
+    })
+
+    it('returns the signing domain of a passing signature', function () {
+      assert.deepEqual(
+        this.plugin.extractDkimDomains({
+          dkim: { results: [sig('duotail.com', 'pass')] },
+        }),
+        ['duotail.com'],
+      )
+    })
+
+    it('keeps only passing signatures', function () {
+      assert.deepEqual(
+        this.plugin.extractDkimDomains({
+          dkim: {
+            results: [
+              sig('attacker.example', 'pass'),
+              sig('duotail.com', 'fail'),
+              sig('neutral.example', 'neutral'),
+            ],
+          },
+        }),
+        ['attacker.example'],
+      )
+    })
+
+    it('lower-cases and de-duplicates domains', function () {
+      assert.deepEqual(
+        this.plugin.extractDkimDomains({
+          dkim: {
+            results: [
+              sig('LinkedIn.com', 'pass'),
+              sig('linkedin.com', 'pass'),
+              sig('maile.linkedin.com', 'pass'),
+            ],
+          },
+        }),
+        ['linkedin.com', 'maile.linkedin.com'],
+      )
+    })
+
+    it('skips a passing result without a signing domain', function () {
+      assert.deepEqual(
+        this.plugin.extractDkimDomains({
+          dkim: { results: [{ status: { result: 'pass' } }] },
+        }),
+        [],
+      )
+    })
+  })
+
+  describe('parseHeaderFrom', function () {
+    const withFrom = (from) => buildTransaction({ headers: { From: from } })
+
+    it('parses a display name and address', function () {
+      assert.deepEqual(
+        this.plugin.parseHeaderFrom(
+          withFrom('"Tao Dong" <tao.dong@duotail.com>\n'),
+        ),
+        {
+          original: '<tao.dong@duotail.com>',
+          original_host: 'duotail.com',
+          host: 'duotail.com',
+          user: 'tao.dong',
+        },
+      )
+    })
+
+    it('parses a bare address', function () {
+      assert.deepEqual(this.plugin.parseHeaderFrom(withFrom('a@b.com')), {
+        original: '<a@b.com>',
+        original_host: 'b.com',
+        host: 'b.com',
+        user: 'a',
+      })
+    })
+
+    it('lower-cases host but keeps original_host as written', function () {
+      const contact = this.plugin.parseHeaderFrom(
+        withFrom('Someone <Some.One@Duotail.COM>'),
+      )
+      assert.equal(contact.host, 'duotail.com')
+      assert.equal(contact.original_host, 'Duotail.COM')
+      assert.equal(contact.original, '<Some.One@Duotail.COM>')
+    })
+
+    it('takes the first mailbox when several are listed', function () {
+      assert.equal(
+        this.plugin.parseHeaderFrom(withFrom('first@a.com, second@b.com'))
+          .original,
+        '<first@a.com>',
+      )
+    })
+
+    it('takes the first mailbox of a group', function () {
+      assert.equal(
+        this.plugin.parseHeaderFrom(withFrom('team: a@b.com, c@d.com;'))
+          .original,
+        '<a@b.com>',
+      )
+    })
+
+    it('returns null for a group with no mailbox', function () {
+      assert.equal(
+        this.plugin.parseHeaderFrom(withFrom('undisclosed-recipients:;')),
+        null,
+      )
+    })
+
+    it('returns null when the header is missing or empty', function () {
+      assert.equal(this.plugin.parseHeaderFrom(buildTransaction()), null)
+      assert.equal(this.plugin.parseHeaderFrom(withFrom('')), null)
+      assert.equal(this.plugin.parseHeaderFrom(undefined), null)
+    })
+
+    it('returns null for an unparseable header', function () {
+      assert.equal(this.plugin.parseHeaderFrom(withFrom('garbage <<<')), null)
+    })
+  })
+
+  describe('cache_and_save', function () {
+    it('publishes headerFrom and dkimDomains in the Kafka message', function (done) {
+      const plugin = this.plugin
+      const sent = []
+      plugin.cfg = {
+        main: { enabled: true },
+        kafka: { topic: 'test', messageVersion: 'test', messageType: 'T' },
+        hazelcast: { cacheMapName: 'm', emailIdCacheMapName: 'ids' },
+      }
+      plugin.kafkaProducer = {
+        send: async ({ messages }) => {
+          sent.push(...messages)
+        },
+      }
+      plugin.connectCacheServer = async () => {}
+      plugin.hzClient = {
+        getMap: async () => ({
+          containsKey: async () => false,
+          put: async () => {},
+        }),
+      }
+
+      const headers = {
+        From: '"Tao Dong" <tao.dong@duotail.com>\n',
+        Subject: 'hi\n',
+        'In-Reply-To': '',
+        'Message-ID': '<id-1@example.com>\n',
+      }
+      const transaction = buildTransaction({ headers })
+      transaction.header.get_all = (name) =>
+        headers[name] === undefined ? [] : [headers[name]]
+      transaction.notes = {
+        get: () => ({
+          spf: { status: { result: 'pass' } },
+          dkim: {
+            results: [
+              { signingDomain: 'Duotail.com', status: { result: 'pass' } },
+            ],
+          },
+        }),
+      }
+      transaction.rcpt_to = []
+      transaction.message_stream = { uuid: 'u', pipe: () => {} }
+
+      const connection = {
+        transaction,
+        remote: { ip: '10.0.0.1', host: 'remote' },
+        hello: { host: 'helo' },
+        local: { ip: '10.0.0.2', host: 'local' },
+        loginfo: () => {},
+        logerror: (e) => done(e),
+      }
+
+      plugin.cache_and_save(() => {
+        try {
+          assert.equal(sent.length, 1)
+          const body = JSON.parse(sent[0].value)
+          assert.deepEqual(body.headerFrom, {
+            original: '<tao.dong@duotail.com>',
+            original_host: 'duotail.com',
+            host: 'duotail.com',
+            user: 'tao.dong',
+          })
+          assert.deepEqual(body.dkimDomains, ['duotail.com'])
+          assert.equal(body.dkimCheck, 'pass')
+          done()
+        } catch (e) {
+          done(e)
+        }
+      }, connection)
+    })
+  })
+
   describe('uses text fixtures', function () {
     it('sets up a connection', function () {
       this.connection = fixtures.connection.createConnection({})
