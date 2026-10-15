@@ -1,6 +1,7 @@
 'use strict'
 
-const addressParser = require('address-rfc2822')
+const { Address } = require('address-rfc2821')
+const parseAddresses = require('email-addresses')
 const { Kafka, logLevel } = require('kafkajs')
 const { Client } = require('hazelcast-client')
 const { Writable } = require('stream')
@@ -179,40 +180,47 @@ exports.extractDkimDomains = function (authResults) {
   return [...new Set(domains)]
 }
 
-// The first mailbox of the From header, shaped like Haraka's mail_from/rcpt_to JSON so
-// the collector deserializes it as a Contact. A From field may list several mailboxes
-// or a group; the first mailbox wins. Null when the header is absent or unparseable.
+// The first mailbox of the From header, built with address-rfc2821 like Haraka's
+// mail_from/rcpt_to so the collector deserializes it as a Contact. The addr-spec is taken
+// verbatim from the header, so a quoted local part keeps its quotes and spacing. A From
+// field may list several mailboxes or a group; the first mailbox wins. Null when the
+// header is absent, unparseable, or its address is not a valid RFC 5321 mailbox.
 // Haraka keeps folded lines as "\n " and joins repeated From headers with "\n", so the
-// value is unfolded (RFC 5322 §2.2.3) and only the first header is parsed.
+// value is unfolded (RFC 5322 §2.2.3) first. A message with more than one From header
+// yields null: a DKIM signature covers only the bottom-most From, so an extra From
+// prepended to a replayed signed message must never become the sender.
 exports.parseHeaderFrom = function (transaction) {
   const raw = transaction?.header?.get?.('From')
-  const value = String(raw ?? '')
+  const headers = String(raw ?? '')
     .replace(/\r?\n(?=[ \t])/g, '')
-    .split(/\r?\n/)[0]
-    .trim()
-  if (!value) return null
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line)
+  if (headers.length !== 1) return null
 
-  let parsed
-  try {
-    parsed = addressParser.parse(value)
-  } catch {
-    return null
-  }
-
-  const mailbox = parsed
-    .flatMap((entry) => (entry?.addresses ? entry.addresses : [entry]))
-    .find((entry) => entry?.address)
+  // Same parser options address-rfc2822 uses, which discards the raw local part.
+  const parsed = parseAddresses({
+    input: headers[0],
+    rfc6532: true,
+    partial: false,
+    simple: false,
+    strict: false,
+    rejectTLD: false,
+    atInDisplayName: true,
+    commaInDisplayName: false,
+  })
+  const mailbox = parsed?.addresses
+    ?.flatMap((entry) => (entry.type === 'group' ? entry.addresses : [entry]))
+    .find((entry) => entry?.parts?.local && entry?.parts?.domain)
   if (!mailbox) return null
 
-  const user = mailbox.user()
-  const host = mailbox.host()
-  if (!user || !host) return null
-
-  return {
-    original: `<${mailbox.address}>`,
-    original_host: host,
-    host: host.toLowerCase(),
-    user,
+  const local = mailbox.parts.local.tokens.trim()
+  const domain = mailbox.parts.domain.tokens.trim()
+  try {
+    // Plain copy of the own fields, which is exactly what JSON.stringify(mail_from) emits.
+    return { ...new Address(`<${local}@${domain}>`) }
+  } catch {
+    return null
   }
 }
 

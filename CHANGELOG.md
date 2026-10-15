@@ -28,4 +28,4 @@ Replaced the boolean `isBounce` Kafka field with `inboundType` (`DSN` / `MDN` / 
 
 ## [1.2.0] - 2026-10-15
 
-Added `headerFrom` (first mailbox of the `From` header, parsed with `address-rfc2822`) and `dkimDomains` (the `d=` domains of every passing DKIM signature) to the Kafka payload. Both fields are additive and optional for consumers.
+Added `headerFrom` (first mailbox of the `From` header, built with `address-rfc2821` like `mailFrom`, keeping quoted local parts verbatim) and `dkimDomains` (the `d=` domains of every passing DKIM signature) to the Kafka payload. Both fields are additive and optional for consumers. A message with more than one `From` header yields `headerFrom: null`, because DKIM covers only the bottom-most `From`.

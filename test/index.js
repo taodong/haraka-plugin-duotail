@@ -404,11 +404,51 @@ describe('duotail', function () {
       )
     })
 
-    it('uses the first of repeated From headers', function () {
+    it('keeps quoted punctuation in the local part', function () {
+      assert.deepEqual(
+        this.plugin.parseHeaderFrom(
+          withFrom('Sender <":sysmail"@example.com>'),
+        ),
+        {
+          original: '<":sysmail"@example.com>',
+          original_host: 'example.com',
+          host: 'example.com',
+          user: '":sysmail"',
+        },
+      )
+    })
+
+    it('keeps repeated spaces in a quoted local part', function () {
+      const contact = this.plugin.parseHeaderFrom(
+        withFrom('S <"a  b"@example.com>'),
+      )
+      assert.equal(contact.original, '<"a  b"@example.com>')
+      assert.equal(contact.user, '"a  b"')
+    })
+
+    it('matches the shape Haraka gives mail_from', function () {
+      const { Address } = require('address-rfc2821')
+      const from = '"Sender" <"john.doe"@Example.COM>'
       assert.equal(
-        this.plugin.parseHeaderFrom(withFrom('first@a.com\nsecond@b.com\n'))
-          .original,
-        '<first@a.com>',
+        JSON.stringify(this.plugin.parseHeaderFrom(withFrom(from))),
+        JSON.stringify(new Address('<"john.doe"@Example.COM>')),
+      )
+    })
+
+    it('returns null for repeated From headers', function () {
+      // An attacker can prepend an unsigned From to a replayed signed message.
+      assert.equal(
+        this.plugin.parseHeaderFrom(
+          withFrom('postmaster@duotail.com\n1_attacker@duotail.com\n'),
+        ),
+        null,
+      )
+    })
+
+    it('treats a trailing newline as a single From header', function () {
+      assert.equal(
+        this.plugin.parseHeaderFrom(withFrom('only@a.com\n')).original,
+        '<only@a.com>',
       )
     })
 

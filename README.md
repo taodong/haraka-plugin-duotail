@@ -31,7 +31,7 @@ Besides the envelope sender (`mailFrom`), the Kafka summary carries two sender f
 
 | Field | Value |
 | --- | --- |
-| `headerFrom` | The first mailbox of the `From` header, in the same shape as `mailFrom` (`original`, `original_host`, `host`, `user`), or `null` when the header is missing or unparseable. A group's first member counts as its mailbox. |
+| `headerFrom` | The first mailbox of the `From` header, built with `address-rfc2821` exactly like `mailFrom` (`original`, `original_host`, `host`, `user`, plus `is_utf8` for internationalized addresses), or `null` when the header is missing, unparseable, not a valid RFC 5321 mailbox, or repeated (a message with more than one `From` header). The address is taken verbatim from the header, so a quoted local part keeps its quotes in `original` and `user`. A group's first member counts as its mailbox. |
 | `dkimDomains` | The lower-cased, de-duplicated `d=` domains of every DKIM signature that verified, or `[]`. `dkimCheck` stays `pass` when any of them passed. |
 
 Both fields are additive. Consumers that don't know them ignore them.
