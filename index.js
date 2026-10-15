@@ -1,5 +1,7 @@
 'use strict'
 
+const { Address } = require('address-rfc2821')
+const parseAddresses = require('email-addresses')
 const { Kafka, logLevel } = require('kafkajs')
 const { Client } = require('hazelcast-client')
 const { Writable } = require('stream')
@@ -31,6 +33,7 @@ exports.cache_and_save = function (next, connection) {
 
   const spfCheck = plugin.etractSpfResult(authResults)
   const dkimCheck = plugin.extractDkimResult(authResults)
+  const dkimDomains = plugin.extractDkimDomains(authResults)
 
   if (plugin.cfg.main.enabled) {
     const { transaction, remote, hello } = connection
@@ -47,6 +50,7 @@ exports.cache_and_save = function (next, connection) {
     const emailId = plugin.generateId()
     const fromHeader = transaction.header.get('From').replace(/\n+$/, '')
     const senderName = fromHeader.replace(/<[^>]*>/g, '').trim()
+    const headerFrom = plugin.parseHeaderFrom(transaction)
     const inReplyTo = transaction.header.get('In-Reply-To').replace(/\n+$/, '')
     const incomingId = transaction.header.get('Message-ID').replace(/\n+$/, '')
 
@@ -65,6 +69,8 @@ exports.cache_and_save = function (next, connection) {
       inboundType,
       bounceStatus,
       incomingId,
+      headerFrom,
+      dkimDomains,
     }
 
     const kMessage = {
@@ -161,6 +167,61 @@ exports.extractDkimResult = function (authResults) {
   return results.some((item) => item?.status?.result === 'pass')
     ? 'pass'
     : 'fail'
+}
+
+// The signing domains (d=) of every DKIM signature that verified, lower-cased and
+// de-duplicated. Downstream uses them to tell which domain vouched for the message;
+// dkimCheck alone only says that some signature passed.
+exports.extractDkimDomains = function (authResults) {
+  const results = authResults?.dkim?.results ?? []
+  const domains = results
+    .filter((item) => item?.status?.result === 'pass' && item?.signingDomain)
+    .map((item) => String(item.signingDomain).trim().toLowerCase())
+  return [...new Set(domains)]
+}
+
+// The first mailbox of the From header, built with address-rfc2821 like Haraka's
+// mail_from/rcpt_to so the collector deserializes it as a Contact. The addr-spec is taken
+// verbatim from the header, so a quoted local part keeps its quotes and spacing. A From
+// field may list several mailboxes or a group; the first mailbox wins. Null when the
+// header is absent, unparseable, or its address is not a valid RFC 5321 mailbox.
+// A message with more than one From header, even an empty one, yields null: a DKIM
+// signature covers only the bottom-most From, so an extra From prepended to a replayed
+// signed message must never become the sender. Instances are counted with get_all,
+// because get joins them with "\n" and an empty one leaves only a blank line. Haraka
+// keeps folded lines as "\n ", so the value is unfolded (RFC 5322 §2.2.3) first.
+exports.parseHeaderFrom = function (transaction) {
+  const instances = transaction?.header?.get_all?.('From') ?? []
+  if (instances.length !== 1) return null
+  const value = String(instances[0] ?? '')
+    .replace(/\r?\n(?=[ \t])/g, '')
+    .trim()
+  if (!value) return null
+
+  // Same parser options address-rfc2822 uses, which discards the raw local part.
+  const parsed = parseAddresses({
+    input: value,
+    rfc6532: true,
+    partial: false,
+    simple: false,
+    strict: false,
+    rejectTLD: false,
+    atInDisplayName: true,
+    commaInDisplayName: false,
+  })
+  const mailbox = parsed?.addresses
+    ?.flatMap((entry) => (entry.type === 'group' ? entry.addresses : [entry]))
+    .find((entry) => entry?.parts?.local && entry?.parts?.domain)
+  if (!mailbox) return null
+
+  const local = mailbox.parts.local.tokens.trim()
+  const domain = mailbox.parts.domain.tokens.trim()
+  try {
+    // Plain copy of the own fields, which is exactly what JSON.stringify(mail_from) emits.
+    return { ...new Address(`<${local}@${domain}>`) }
+  } catch {
+    return null
+  }
 }
 
 // Classify an inbound message into one of five types and, for delivery-status
