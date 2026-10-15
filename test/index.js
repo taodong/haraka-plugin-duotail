@@ -395,6 +395,23 @@ describe('duotail', function () {
       )
     })
 
+    it('unfolds a From header split across lines', function () {
+      assert.equal(
+        this.plugin.parseHeaderFrom(
+          withFrom('"A very long display name here"\n <a@b.com>\n'),
+        ).original,
+        '<a@b.com>',
+      )
+    })
+
+    it('uses the first of repeated From headers', function () {
+      assert.equal(
+        this.plugin.parseHeaderFrom(withFrom('first@a.com\nsecond@b.com\n'))
+          .original,
+        '<first@a.com>',
+      )
+    })
+
     it('returns null for a group with no mailbox', function () {
       assert.equal(
         this.plugin.parseHeaderFrom(withFrom('undisclosed-recipients:;')),

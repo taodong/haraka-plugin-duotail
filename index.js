@@ -182,10 +182,13 @@ exports.extractDkimDomains = function (authResults) {
 // The first mailbox of the From header, shaped like Haraka's mail_from/rcpt_to JSON so
 // the collector deserializes it as a Contact. A From field may list several mailboxes
 // or a group; the first mailbox wins. Null when the header is absent or unparseable.
+// Haraka keeps folded lines as "\n " and joins repeated From headers with "\n", so the
+// value is unfolded (RFC 5322 §2.2.3) and only the first header is parsed.
 exports.parseHeaderFrom = function (transaction) {
   const raw = transaction?.header?.get?.('From')
   const value = String(raw ?? '')
-    .replace(/\n+$/, '')
+    .replace(/\r?\n(?=[ \t])/g, '')
+    .split(/\r?\n/)[0]
     .trim()
   if (!value) return null
 
