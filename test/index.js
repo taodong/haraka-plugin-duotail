@@ -512,7 +512,7 @@ describe('duotail', function () {
       plugin.connectCacheServer = async () => {}
       plugin.hzClient = {
         getMap: async () => ({
-          containsKey: async () => false,
+          putIfAbsent: async () => null,
           put: async () => {},
         }),
       }
@@ -534,8 +534,11 @@ describe('duotail', function () {
           },
         }),
       }
-      transaction.rcpt_to = []
-      transaction.message_stream = { uuid: 'u', pipe: () => {} }
+      transaction.rcpt_to = [{ user: 'a', host: 'duotail.com' }]
+      transaction.message_stream = {
+        uuid: 'u',
+        pipe: (destination) => destination.end('raw'),
+      }
 
       const connection = {
         transaction,
@@ -563,6 +566,328 @@ describe('duotail', function () {
           done(e)
         }
       }, connection)
+    })
+  })
+
+  describe('cache_and_save de-duplication', function () {
+    const { Address } = require('address-rfc2821')
+    const { Writable } = require('stream')
+
+    // An in-memory stand-in for the Hazelcast maps: putIfAbsent is atomic, as in IMap.
+    const memoryMap = () => {
+      const entries = new Map()
+      return {
+        entries,
+        putIfAbsent: async (key, value) => {
+          if (entries.has(key)) return entries.get(key)
+          entries.set(key, value)
+          return null
+        },
+        put: async (key, value) => {
+          entries.set(key, value)
+        },
+        remove: async (key) => {
+          const value = entries.get(key)
+          entries.delete(key)
+          return value
+        },
+      }
+    }
+
+    const setUp = (plugin) => {
+      const env = { sent: [], ids: memoryMap(), cache: memoryMap() }
+      plugin.cfg = {
+        main: { enabled: true },
+        kafka: { topic: 'test', messageVersion: 'test', messageType: 'T' },
+        hazelcast: { cacheMapName: 'cache', emailIdCacheMapName: 'ids' },
+      }
+      plugin.kafkaProducer = {
+        send: async ({ messages }) => {
+          env.sent.push(...messages)
+        },
+      }
+      plugin.connectCacheServer = async () => {}
+      plugin.hzClient = {
+        getMap: async (name) => (name === 'ids' ? env.ids : env.cache),
+      }
+      return env
+    }
+
+    const connectionFor = (recipients, messageId = '<mid-1@gmail.com>\n') => {
+      const lookup = {
+        from: 'Sender <sender@gmail.com>\n',
+        subject: 'hi\n',
+        'in-reply-to': '',
+        'message-id': messageId,
+      }
+      const transaction = {
+        mail_from: new Address('<sender@gmail.com>'),
+        rcpt_to: recipients.map((r) => new Address(`<${r}>`)),
+        body: null,
+        notes: { get: () => ({}) },
+        header: {
+          get_all: (name) => {
+            const value = lookup[String(name).toLowerCase()]
+            return value === undefined ? [] : [value]
+          },
+          get(name) {
+            return this.get_all(name).join('\n')
+          },
+        },
+        message_stream: {
+          uuid: 'u',
+          pipe: (destination) => destination.end('raw message'),
+        },
+      }
+      return {
+        transaction,
+        remote: { ip: '10.0.0.1', host: 'remote' },
+        hello: { host: 'helo' },
+        local: { ip: '10.0.0.2', host: 'local' },
+        loginfo: () => {},
+        logerror: () => {},
+      }
+    }
+
+    // Runs cache_and_save and resolves with the arguments it passed to next.
+    const save = (plugin, connection) =>
+      new Promise((resolve) => {
+        plugin.cache_and_save((...args) => resolve(args), connection)
+      })
+
+    const sentRecipients = (message) =>
+      JSON.parse(message.value).rcptTo.map((r) => `${r.user}@${r.host}`)
+
+    it('forwards every recipient of a split email (observed Gmail reply-all)', async function () {
+      const env = setUp(this.plugin)
+      const first = await save(
+        this.plugin,
+        connectionFor(['1_tao.dong_bzdv@duotail.com']),
+      )
+      const second = await save(
+        this.plugin,
+        connectionFor(['3_wedgeup_at_gmail.com@duotail.com']),
+      )
+      assert.deepEqual(first, [])
+      assert.deepEqual(second, [])
+      assert.equal(env.sent.length, 2)
+      assert.deepEqual(sentRecipients(env.sent[0]), [
+        '1_tao.dong_bzdv@duotail.com',
+      ])
+      assert.deepEqual(sentRecipients(env.sent[1]), [
+        '3_wedgeup_at_gmail.com@duotail.com',
+      ])
+    })
+
+    it('forwards all recipients of one transaction in one message', async function () {
+      const env = setUp(this.plugin)
+      await save(
+        this.plugin,
+        connectionFor(['a@duotail.com', 'b@duotail.com', 'c@duotail.com']),
+      )
+      assert.equal(env.sent.length, 1)
+      assert.deepEqual(sentRecipients(env.sent[0]), [
+        'a@duotail.com',
+        'b@duotail.com',
+        'c@duotail.com',
+      ])
+      assert.deepEqual(
+        [...env.ids.entries.keys()],
+        [
+          '<mid-1@gmail.com>|a@duotail.com',
+          '<mid-1@gmail.com>|b@duotail.com',
+          '<mid-1@gmail.com>|c@duotail.com',
+        ],
+      )
+    })
+
+    it('drops a repeat of the same delivery', async function () {
+      const env = setUp(this.plugin)
+      await save(this.plugin, connectionFor(['a@duotail.com']))
+      const repeat = await save(this.plugin, connectionFor(['a@duotail.com']))
+      assert.deepEqual(repeat, [])
+      assert.equal(env.sent.length, 1)
+      assert.equal(env.cache.entries.size, 1)
+    })
+
+    it('forwards only the new recipients of a partly repeated delivery', async function () {
+      const env = setUp(this.plugin)
+      await save(this.plugin, connectionFor(['a@duotail.com']))
+      await save(this.plugin, connectionFor(['a@duotail.com', 'b@duotail.com']))
+      assert.equal(env.sent.length, 2)
+      assert.deepEqual(sentRecipients(env.sent[1]), ['b@duotail.com'])
+    })
+
+    it('treats recipients that differ only in case as the same', async function () {
+      const env = setUp(this.plugin)
+      await save(this.plugin, connectionFor(['3_Abc_at_x.com@duotail.com']))
+      await save(this.plugin, connectionFor(['3_abc_at_x.com@duotail.com']))
+      assert.equal(env.sent.length, 1)
+    })
+
+    it('forwards a recipient listed twice in one envelope once', async function () {
+      const env = setUp(this.plugin)
+      await save(this.plugin, connectionFor(['a@duotail.com', 'a@duotail.com']))
+      assert.deepEqual(sentRecipients(env.sent[0]), ['a@duotail.com'])
+    })
+
+    it('lets exactly one of two concurrent transactions claim a recipient', async function () {
+      const env = setUp(this.plugin)
+      const results = await Promise.all([
+        save(this.plugin, connectionFor(['a@duotail.com'])),
+        save(this.plugin, connectionFor(['a@duotail.com'])),
+      ])
+      assert.deepEqual(results, [[], []])
+      assert.equal(env.sent.length, 1)
+    })
+
+    it('does not de-duplicate an email without a Message-ID', async function () {
+      const env = setUp(this.plugin)
+      await save(this.plugin, connectionFor(['a@duotail.com'], ''))
+      await save(this.plugin, connectionFor(['a@duotail.com'], ''))
+      assert.equal(env.sent.length, 2)
+      assert.equal(env.ids.entries.size, 0)
+    })
+
+    it('publishes the summary only after the cache write finished', async function () {
+      const env = setUp(this.plugin)
+      const order = []
+      const put = env.cache.put
+      env.cache.put = async (key, value) => {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        order.push('cached')
+        return put(key, value)
+      }
+      this.plugin.kafkaProducer.send = async () => {
+        order.push('published')
+      }
+      await save(this.plugin, connectionFor(['a@duotail.com']))
+      assert.deepEqual(order, ['cached', 'published'])
+    })
+
+    it('releases the claims and answers DENYSOFT when Kafka fails', async function () {
+      const env = setUp(this.plugin)
+      this.plugin.kafkaProducer.send = async () => {
+        throw new Error('broker down')
+      }
+      const result = await save(
+        this.plugin,
+        connectionFor(['a@duotail.com', 'b@duotail.com']),
+      )
+      assert.deepEqual(result, [903, 'Temporary failure, please retry'])
+      assert.equal(env.ids.entries.size, 0)
+
+      // The sender's retry is processed.
+      this.plugin.kafkaProducer.send = async ({ messages }) => {
+        env.sent.push(...messages)
+      }
+      await save(this.plugin, connectionFor(['a@duotail.com', 'b@duotail.com']))
+      assert.equal(env.sent.length, 1)
+    })
+
+    it('releases the claims and answers DENYSOFT when the cache write fails', async function () {
+      const env = setUp(this.plugin)
+      env.cache.put = async () => {
+        throw new Error('cache down')
+      }
+      const result = await save(this.plugin, connectionFor(['a@duotail.com']))
+      assert.deepEqual(result, [903, 'Temporary failure, please retry'])
+      assert.equal(env.sent.length, 0)
+      assert.equal(env.ids.entries.size, 0)
+    })
+
+    it('answers DENYSOFT when the message stream fails', async function () {
+      const env = setUp(this.plugin)
+      const connection = connectionFor(['a@duotail.com'])
+      const { EventEmitter } = require('events')
+      const stream = new EventEmitter()
+      stream.uuid = 'u'
+      stream.pipe = () => stream.emit('error', new Error('read failed'))
+      connection.transaction.message_stream = stream
+      const result = await save(this.plugin, connection)
+      assert.deepEqual(result, [903, 'Temporary failure, please retry'])
+      assert.equal(env.ids.entries.size, 0)
+    })
+
+    it('answers DENYSOFT when the claim itself fails', async function () {
+      const env = setUp(this.plugin)
+      env.ids.putIfAbsent = async () => {
+        throw new Error('hazelcast down')
+      }
+      const result = await save(this.plugin, connectionFor(['a@duotail.com']))
+      assert.deepEqual(result, [903, 'Temporary failure, please retry'])
+      assert.equal(env.sent.length, 0)
+    })
+
+    it('answers DENYSOFT when Hazelcast is unreachable', async function () {
+      const env = setUp(this.plugin)
+      this.plugin.connectCacheServer = async () => {
+        throw new Error('Hazelcast client could not be restarted')
+      }
+      const result = await save(this.plugin, connectionFor(['a@duotail.com']))
+      assert.deepEqual(result, [903, 'Temporary failure, please retry'])
+      assert.equal(env.sent.length, 0)
+    })
+
+    it('releases claims made before a later claim fails', async function () {
+      const env = setUp(this.plugin)
+      const putIfAbsent = env.ids.putIfAbsent
+      env.ids.putIfAbsent = async (key, value) => {
+        if (key.endsWith('|b@duotail.com')) throw new Error('hazelcast down')
+        return putIfAbsent(key, value)
+      }
+      const result = await save(
+        this.plugin,
+        connectionFor(['a@duotail.com', 'b@duotail.com']),
+      )
+      assert.deepEqual(result, [903, 'Temporary failure, please retry'])
+      assert.equal(env.ids.entries.size, 0)
+    })
+
+    it('releases only its own claims on failure', async function () {
+      const env = setUp(this.plugin)
+      await save(this.plugin, connectionFor(['a@duotail.com']))
+      this.plugin.kafkaProducer.send = async () => {
+        throw new Error('broker down')
+      }
+      await save(this.plugin, connectionFor(['a@duotail.com', 'b@duotail.com']))
+      assert.deepEqual(
+        [...env.ids.entries.keys()],
+        ['<mid-1@gmail.com>|a@duotail.com'],
+      )
+    })
+
+    it('still answers DENYSOFT when releasing a claim fails', async function () {
+      const env = setUp(this.plugin)
+      this.plugin.kafkaProducer.send = async () => {
+        throw new Error('broker down')
+      }
+      env.ids.remove = async () => {
+        throw new Error('hazelcast down')
+      }
+      const errors = []
+      const connection = connectionFor(['a@duotail.com'])
+      connection.logerror = (_plugin, message) => errors.push(message)
+      const result = await save(this.plugin, connection)
+      assert.deepEqual(result, [903, 'Temporary failure, please retry'])
+      assert.ok(errors.some((m) => m.includes('failed to release claim')))
+    })
+
+    it('pipeToCache resolves only after the destination finished', async function () {
+      let finished = false
+      const destination = new Writable({
+        write(_chunk, _encoding, callback) {
+          callback()
+        },
+        final(callback) {
+          setTimeout(() => {
+            finished = true
+            callback()
+          }, 5)
+        },
+      })
+      await this.plugin.pipeToCache({ pipe: (d) => d.end('x') }, destination)
+      assert.ok(finished)
     })
   })
 

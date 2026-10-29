@@ -1,6 +1,7 @@
 'use strict'
 
 const { Address } = require('address-rfc2821')
+const constants = require('haraka-constants')
 const parseAddresses = require('email-addresses')
 const { Kafka, logLevel } = require('kafkajs')
 const { Client } = require('hazelcast-client')
@@ -54,6 +55,7 @@ exports.cache_and_save = function (next, connection) {
     const inReplyTo = transaction.header.get('In-Reply-To').replace(/\n+$/, '')
     const incomingId = transaction.header.get('Message-ID').replace(/\n+$/, '')
 
+    // rcptTo is replaced by the recipients this transaction claimed (buildKafkaMessage).
     const kMessageBody = {
       emailId,
       mailFrom,
@@ -73,9 +75,9 @@ exports.cache_and_save = function (next, connection) {
       dkimDomains,
     }
 
-    const kMessage = {
+    const buildKafkaMessage = (recipients) => ({
       key: emailId,
-      value: JSON.stringify(kMessageBody),
+      value: JSON.stringify({ ...kMessageBody, rcptTo: recipients }),
       headers: {
         'message-version': plugin.cfg.kafka.messageVersion,
         'correlation-id': emailId,
@@ -83,34 +85,26 @@ exports.cache_and_save = function (next, connection) {
         'haraka-host': connection.local.host,
         __TypeId__: plugin.cfg.kafka.messageType,
       },
-    }
+    })
 
     const topic = plugin.cfg.kafka.topic
 
+    // Rejects on failure, so the transaction is answered DENYSOFT and the sender retries.
     const saveEmailSummary = async (summaryMessage) => {
-      return plugin.kafkaProducer
-        .send({
-          topic,
-          messages: [summaryMessage],
-        })
-        .then(console.log)
-        .catch((e) => console.error(`[kafka/sendMessage] ${e.message}`, e))
+      const result = await plugin.kafkaProducer.send({
+        topic,
+        messages: [summaryMessage],
+      })
+      console.log(result)
     }
 
-    const cacheOriginalEmailId = async (id) => {
+    const getEmailIdMap = async () => {
       await plugin.connectCacheServer(connection)
-      const map = await plugin.hzClient.getMap(
-        plugin.cfg.hazelcast.emailIdCacheMapName,
-      )
-      const exists = await map.containsKey(id)
-      if (exists) {
-        return -1
-      } else {
-        await map.put(id, true)
-        return 1
-      }
+      return plugin.hzClient.getMap(plugin.cfg.hazelcast.emailIdCacheMapName)
     }
 
+    // Resolves once the whole message is in the cache, so the summary is never published
+    // before the copy the collector reads exists.
     const cacheEmail = async (message_stream, id) => {
       await plugin.connectCacheServer(connection)
       const map = await plugin.hzClient.getMap(
@@ -120,42 +114,137 @@ exports.cache_and_save = function (next, connection) {
 
       console.log(`Haraka readable stream id is ${message_stream.uuid}`)
 
-      message_stream.pipe(cacheStream, { line_endings: '\n' })
+      await plugin.pipeToCache(message_stream, cacheStream)
     }
 
-    const run = async (id, incomingId, sm, trans) => {
-      if (incomingId) {
-        const cacheResult = await cacheOriginalEmailId(incomingId)
-        if (cacheResult === 1) {
-          await cacheEmail(trans.message_stream, id)
-          await saveEmailSummary(sm)
-          connection.loginfo(plugin, `Done async email processing for: ${id}`)
-          next()
-        } else {
+    const publish = async (recipients) => {
+      const kMessage = buildKafkaMessage(recipients)
+      connection.loginfo(plugin, 'Processed email: ', kMessage)
+      await cacheEmail(transaction.message_stream, emailId)
+      await saveEmailSummary(kMessage)
+      connection.loginfo(plugin, `Done async email processing for: ${emailId}`)
+    }
+
+    // A remote server may split one email over several transactions (Gmail reply-all sends
+    // each recipient on its own connection), all with the same Message-ID. Each recipient is
+    // claimed once, so a split delivers every recipient and a repeat of the same delivery is
+    // dropped. Claims expire with the map's TTL, which is set on the Hazelcast member.
+    const run = async () => {
+      if (!incomingId) {
+        await publish(rcptTo)
+        return
+      }
+
+      const claimedKeys = []
+      let map
+      try {
+        map = await getEmailIdMap()
+        const claimed = await plugin.claimRecipients(
+          map,
+          incomingId,
+          rcptTo,
+          claimedKeys,
+        )
+        if (claimed.length === 0) {
           connection.loginfo(
             plugin,
-            `Email with incomingId ${incomingId} is already processed.`,
+            `Email with incomingId ${incomingId} is already processed for ${plugin.recipientAddresses(rcptTo)}.`,
           )
-          next()
+          return
         }
-      } else {
-        // If no incomingId, proceed as before
-        await cacheEmail(trans.message_stream, id)
-        await saveEmailSummary(sm)
-        connection.loginfo(plugin, `Done async email processing for: ${id}`)
-        next()
+        if (claimed.length < rcptTo.length) {
+          connection.loginfo(
+            plugin,
+            `Email with incomingId ${incomingId} is already processed for some recipients; forwarding only ${plugin.recipientAddresses(claimed)}.`,
+          )
+        }
+        await publish(claimed)
+      } catch (e) {
+        await plugin.releaseClaims(map, claimedKeys, connection)
+        throw e
       }
     }
 
-    run(emailId, incomingId, kMessage, transaction).catch((e) =>
-      connection.logerror(`[kafka||hazelcast] ${e.message}`, e),
+    // next is called exactly once: the success handler is not covered by the failure handler.
+    run().then(
+      () => next(),
+      (e) => {
+        connection.logerror(plugin, `[kafka||hazelcast] ${e.message}`, e)
+        next(constants.denysoft, exports.TEMPORARY_FAILURE_MESSAGE)
+      },
     )
-
-    connection.loginfo(plugin, 'Processed email: ', kMessage)
   } else {
     connection.logdebug(plugin, 'duotail is disabled through configuration')
     next()
   }
+}
+
+exports.TEMPORARY_FAILURE_MESSAGE = 'Temporary failure, please retry'
+
+// The de-duplication key of one envelope recipient of an email. Case-insensitive: two
+// addresses that differ only in case are the same mailbox.
+exports.recipientKey = function (incomingId, rcpt) {
+  return `${incomingId}|${exports.recipientAddress(rcpt).toLowerCase()}`
+}
+
+exports.recipientAddress = function (rcpt) {
+  if (typeof rcpt?.address === 'function') return rcpt.address()
+  return rcpt?.host ? `${rcpt.user}@${rcpt.host}` : String(rcpt?.user ?? '')
+}
+
+exports.recipientAddresses = function (rcptTo) {
+  return rcptTo.map((rcpt) => exports.recipientAddress(rcpt)).join(', ')
+}
+
+// Claims every recipient no earlier transaction of this email has claimed, with an atomic
+// putIfAbsent, and returns those recipients in envelope order. Each key this call stored is
+// pushed onto claimedKeys as soon as it is stored, so a caller can release them when a later
+// step (or a later claim) fails. A recipient listed twice in one envelope is forwarded once.
+exports.claimRecipients = async function (
+  map,
+  incomingId,
+  rcptTo,
+  claimedKeys,
+) {
+  const claimed = []
+  for (const rcpt of rcptTo) {
+    const key = exports.recipientKey(incomingId, rcpt)
+    if (claimedKeys.includes(key)) continue
+    const previous = await map.putIfAbsent(key, true)
+    if (previous === null || previous === undefined) {
+      claimedKeys.push(key)
+      claimed.push(rcpt)
+    }
+  }
+  return claimed
+}
+
+// Removes the keys this transaction claimed, so the sender's retry is processed. Never throws:
+// when Hazelcast is unreachable the keys expire with the map's TTL instead.
+exports.releaseClaims = async function (map, claimedKeys, connection) {
+  if (!map || claimedKeys.length === 0) return
+  for (const key of claimedKeys) {
+    try {
+      await map.remove(key)
+    } catch (e) {
+      connection.logerror(
+        this,
+        `[hazelcast] failed to release claim ${key}: ${e.message}`,
+        e,
+      )
+    }
+  }
+}
+
+// Pipes the message into the cache stream and resolves when the stream has written it
+// (its _final put finished); rejects when either stream fails.
+exports.pipeToCache = function (messageStream, cacheStream) {
+  return new Promise((resolve, reject) => {
+    cacheStream.once('finish', resolve)
+    cacheStream.once('error', reject)
+    messageStream.once?.('error', reject)
+    messageStream.pipe(cacheStream, { line_endings: '\n' })
+  })
 }
 
 exports.etractSpfResult = function (authResults) {

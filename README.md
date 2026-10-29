@@ -38,6 +38,18 @@ Both fields are additive. Consumers that don't know them ignore them.
 
 When the Kafka message schema changes (for example, replacing `isBounce` with `inboundType`/`bounceStatus`), bump `messageVersion` in `config/duotail.ini` so downstream consumers can safely branch on the schema version.
 
+## De-duplication
+
+A remote server may deliver one email over several SMTP transactions with the same `Message-ID`: Gmail sends a reply-all with one recipient per transaction, on parallel connections, and any server may repeat a delivery. Each envelope recipient is therefore claimed once, with an atomic `putIfAbsent` of `<Message-ID>|<recipient>` (recipient lower-cased) in the `emailIdCacheMapName` map:
+
+- recipients no earlier transaction claimed are forwarded; the summary's `rcptTo` holds only those, so it may be a subset of the transaction's envelope;
+- a transaction whose recipients were all claimed before is dropped (answered `250`, as before);
+- a message without `Message-ID` is forwarded without de-duplication.
+
+Claims expire with the map's `time-to-live-seconds`, which is set on the Hazelcast **member**, not by this plugin (Duotail uses 120 s).
+
+The summary is published to Kafka only after the message is in the cache. If caching or publishing fails, the plugin removes the claims this transaction made and answers `DENYSOFT` (`451 Temporary failure, please retry`) at once, so the sender's retry is processed.
+
 ## INSTALL
 
 ```sh
