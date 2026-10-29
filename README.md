@@ -34,7 +34,13 @@ Besides the envelope sender (`mailFrom`), the Kafka summary carries two sender f
 | `headerFrom` | The first mailbox of the `From` header, built with `address-rfc2821` exactly like `mailFrom` (`original`, `original_host`, `host`, `user`, plus `is_utf8` for internationalized addresses), or `null` when the header is missing, unparseable, not a valid RFC 5321 mailbox, or repeated (a message with more than one `From` header). The address is taken verbatim from the header, so a quoted local part keeps its quotes in `original` and `user`. A group's first member counts as its mailbox. |
 | `dkimDomains` | The lower-cased, de-duplicated `d=` domains of every DKIM signature that verified, or `[]`. `dkimCheck` stays `pass` when any of them passed. |
 
-Both fields are additive. Consumers that don't know them ignore them.
+## Header recipients
+
+`headerRecipients` lists the `To` and `Cc` mailboxes, `To` first, in header order, every instance of each header, with a group's members as mailboxes. Each is built with `address-rfc2821` exactly like `headerFrom`. An address that is not a valid RFC 5321 mailbox is left out, and the list is `[]` when there are none.
+
+Unlike `rcptTo`, it does not depend on how the sender's server split the delivery: Gmail sends a reply-all with one recipient per transaction, but every transaction carries the full `To`/`Cc`.
+
+These fields are additive. Consumers that don't know them ignore them.
 
 When the Kafka message schema changes (for example, replacing `isBounce` with `inboundType`/`bounceStatus`), bump `messageVersion` in `config/duotail.ini` so downstream consumers can safely branch on the schema version.
 

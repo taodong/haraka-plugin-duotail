@@ -495,6 +495,71 @@ describe('duotail', function () {
     })
   })
 
+  describe('parseHeaderRecipients', function () {
+    const addresses = (plugin, headers) =>
+      plugin
+        .parseHeaderRecipients(buildTransaction({ headers }))
+        .map((a) => `${a.user}@${a.host}`)
+
+    it('lists To before Cc, in header order', function () {
+      assert.deepEqual(
+        addresses(this.plugin, {
+          To: 'X <1_ch_fi@duotail.com>, 3_Y_at_example.com@duotail.com\n',
+          Cc: '"Long" <4_abcdefgh_1@duotail.com>\n',
+        }),
+        [
+          '1_ch_fi@duotail.com',
+          '3_Y_at_example.com@duotail.com',
+          '4_abcdefgh_1@duotail.com',
+        ],
+      )
+    })
+
+    it('builds each mailbox like headerFrom, keeping the local part case', function () {
+      assert.deepEqual(
+        this.plugin.parseHeaderRecipients(
+          buildTransaction({ headers: { To: 'Y <3_Y_at_X.com@Duotail.com>' } }),
+        ),
+        [
+          {
+            original: '<3_Y_at_X.com@Duotail.com>',
+            original_host: 'Duotail.com',
+            host: 'duotail.com',
+            user: '3_Y_at_X.com',
+          },
+        ],
+      )
+    })
+
+    it('reads every instance of a header', function () {
+      assert.deepEqual(
+        addresses(this.plugin, { Cc: ['a@x.com\n', 'b@x.com\n'] }),
+        ['a@x.com', 'b@x.com'],
+      )
+    })
+
+    it('flattens a group and unfolds folded lines', function () {
+      assert.deepEqual(
+        addresses(this.plugin, {
+          To: 'team: a@x.com,\n b@x.com;, c@x.com\n',
+        }),
+        ['a@x.com', 'b@x.com', 'c@x.com'],
+      )
+    })
+
+    it('leaves out an address that is not a valid mailbox', function () {
+      assert.deepEqual(
+        addresses(this.plugin, { To: 'ok@x.com, "a b"@[300.1.1.1]\n' }),
+        ['ok@x.com'],
+      )
+    })
+
+    it('returns an empty list without To or Cc, or for an unparseable one', function () {
+      assert.deepEqual(addresses(this.plugin, {}), [])
+      assert.deepEqual(addresses(this.plugin, { To: '\n', Cc: '<<<' }), [])
+    })
+  })
+
   describe('cache_and_save', function () {
     it('publishes headerFrom and dkimDomains in the Kafka message', function (done) {
       const plugin = this.plugin
@@ -560,6 +625,7 @@ describe('duotail', function () {
             user: 'tao.dong',
           })
           assert.deepEqual(body.dkimDomains, ['duotail.com'])
+          assert.deepEqual(body.headerRecipients, [])
           assert.equal(body.dkimCheck, 'pass')
           done()
         } catch (e) {
@@ -677,6 +743,24 @@ describe('duotail', function () {
       assert.deepEqual(sentRecipients(env.sent[1]), [
         '3_wedgeup_at_gmail.com@duotail.com',
       ])
+    })
+
+    it('publishes the To/Cc mailboxes, whatever the envelope', async function () {
+      const env = setUp(this.plugin)
+      const connection = connectionFor(['1_tao.dong_bzdv@duotail.com'])
+      const get_all = connection.transaction.header.get_all
+      connection.transaction.header.get_all = (name) =>
+        name === 'To'
+          ? [
+              '1_tao.dong_bzdv@duotail.com, 3_wedgeup_at_gmail.com@duotail.com\n',
+            ]
+          : get_all(name)
+      await save(this.plugin, connection)
+      const body = JSON.parse(env.sent[0].value)
+      assert.deepEqual(
+        body.headerRecipients.map((r) => `${r.user}@${r.host}`),
+        ['1_tao.dong_bzdv@duotail.com', '3_wedgeup_at_gmail.com@duotail.com'],
+      )
     })
 
     it('forwards all recipients of one transaction in one message', async function () {

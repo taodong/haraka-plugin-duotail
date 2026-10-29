@@ -52,6 +52,7 @@ exports.cache_and_save = function (next, connection) {
     const fromHeader = transaction.header.get('From').replace(/\n+$/, '')
     const senderName = fromHeader.replace(/<[^>]*>/g, '').trim()
     const headerFrom = plugin.parseHeaderFrom(transaction)
+    const headerRecipients = plugin.parseHeaderRecipients(transaction)
     const inReplyTo = transaction.header.get('In-Reply-To').replace(/\n+$/, '')
     const incomingId = transaction.header.get('Message-ID').replace(/\n+$/, '')
 
@@ -73,6 +74,7 @@ exports.cache_and_save = function (next, connection) {
       incomingId,
       headerFrom,
       dkimDomains,
+      headerRecipients,
     }
 
     const buildKafkaMessage = (recipients) => ({
@@ -282,10 +284,36 @@ exports.extractDkimDomains = function (authResults) {
 exports.parseHeaderFrom = function (transaction) {
   const instances = transaction?.header?.get_all?.('From') ?? []
   if (instances.length !== 1) return null
-  const value = String(instances[0] ?? '')
+  const mailbox = exports.parseMailboxParts(instances[0])[0]
+  return mailbox ? exports.toAddress(mailbox) : null
+}
+
+// The To and Cc mailboxes, To first, in header order, every instance of each header, built
+// like headerFrom so the collector deserializes them as Contacts. A group's members count as
+// mailboxes; an address that is not a valid RFC 5321 mailbox is left out. The collector reads
+// reply-all participants from them: a reply-all split over several transactions may carry
+// only some participants in its envelope, but every one of them in To/Cc.
+exports.parseHeaderRecipients = function (transaction) {
+  const recipients = []
+  for (const name of ['To', 'Cc']) {
+    for (const instance of transaction?.header?.get_all?.(name) ?? []) {
+      for (const mailbox of exports.parseMailboxParts(instance)) {
+        const address = exports.toAddress(mailbox)
+        if (address) recipients.push(address)
+      }
+    }
+  }
+  return recipients
+}
+
+// The { local, domain } of every mailbox of one address-list header value, in order, groups
+// flattened. Haraka keeps folded lines as "\n ", so the value is unfolded (RFC 5322 §2.2.3)
+// first. The addr-spec is taken verbatim, so a quoted local part keeps its quotes and spacing.
+exports.parseMailboxParts = function (headerValue) {
+  const value = String(headerValue ?? '')
     .replace(/\r?\n(?=[ \t])/g, '')
     .trim()
-  if (!value) return null
+  if (!value) return []
 
   // Same parser options address-rfc2822 uses, which discards the raw local part.
   const parsed = parseAddresses({
@@ -298,15 +326,19 @@ exports.parseHeaderFrom = function (transaction) {
     atInDisplayName: true,
     commaInDisplayName: false,
   })
-  const mailbox = parsed?.addresses
-    ?.flatMap((entry) => (entry.type === 'group' ? entry.addresses : [entry]))
-    .find((entry) => entry?.parts?.local && entry?.parts?.domain)
-  if (!mailbox) return null
+  return (parsed?.addresses ?? [])
+    .flatMap((entry) => (entry.type === 'group' ? entry.addresses : [entry]))
+    .filter((entry) => entry?.parts?.local && entry?.parts?.domain)
+    .map((entry) => ({
+      local: entry.parts.local.tokens.trim(),
+      domain: entry.parts.domain.tokens.trim(),
+    }))
+}
 
-  const local = mailbox.parts.local.tokens.trim()
-  const domain = mailbox.parts.domain.tokens.trim()
+// A plain copy of an Address's own fields, which is exactly what JSON.stringify(mail_from)
+// emits; null when the mailbox is not a valid RFC 5321 address.
+exports.toAddress = function ({ local, domain }) {
   try {
-    // Plain copy of the own fields, which is exactly what JSON.stringify(mail_from) emits.
     return { ...new Address(`<${local}@${domain}>`) }
   } catch {
     return null
