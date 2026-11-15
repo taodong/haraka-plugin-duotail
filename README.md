@@ -9,7 +9,7 @@ Haraka plugin for Duotail project. It routes the incoming email to a Hazelcast c
 
 For production environment, the following plugins are needed before this plugin:
 
-- [mailauth](https://github.com/haraka/haraka-plugin-mailauth) — provides the SPF/DKIM results this plugin reads.
+- [mailauth](https://github.com/haraka/haraka-plugin-mailauth) — provides the SPF, DKIM and DMARC results this plugin reads. It must be listed before `duotail` in `config/plugins`.
 
 ## Inbound message classification
 
@@ -32,7 +32,36 @@ Besides the envelope sender (`mailFrom`), the Kafka summary carries two sender f
 | Field | Value |
 | --- | --- |
 | `headerFrom` | The first mailbox of the `From` header, built with `address-rfc2821` exactly like `mailFrom` (`original`, `original_host`, `host`, `user`, plus `is_utf8` for internationalized addresses), or `null` when the header is missing, unparseable, not a valid RFC 5321 mailbox, or repeated (a message with more than one `From` header). The address is taken verbatim from the header, so a quoted local part keeps its quotes in `original` and `user`. A group's first member counts as its mailbox. |
-| `dkimDomains` | The lower-cased, de-duplicated `d=` domains of every DKIM signature that verified, or `[]`. `dkimCheck` stays `pass` when any of them passed. |
+| `dmarc` | The DMARC result, below, or `null`. |
+
+## DMARC
+
+`dmarc` is `null` when mailauth's DMARC step did not run (DKIM verification threw), threw, or saw no `From` address or more than one. Otherwise it is:
+
+| Field | Value |
+| --- | --- |
+| `result` | `pass`, `fail`, `none` (no DMARC record) or `temperror` (the lookup failed) |
+| `domain` | The organizational domain of the header `From` domain |
+| `policy` | The effective policy (`sp` for a subdomain covered by the organizational record, else `p`), or `null` for `none` and `temperror` |
+| `dkimAligned` | The passing DKIM `d=` domain that aligns with the header `From`, or `null` |
+| `spfAligned` | The envelope `MAIL FROM` domain when SPF passed and it aligns with the header `From`, or `null` |
+
+For `pass` and `fail`, alignment is mailauth's. For `none` and `temperror` mailauth computes none, so the plugin computes relaxed alignment itself with mailauth's `getAlignment`, from the same inputs. `mailauth` is pinned, because `mailauth/lib/tools` is not a documented entry point: re-run the tests on every upgrade. Strict alignment (`adkim=s`, `aspf=s`) is treated as relaxed, as mailauth 4.7.2 does.
+
+### Refusing unaligned mail
+
+With `rejectUnaligned = true` in the `[auth]` section, the `queue` hook refuses mail with no aligned domain before it is cached or published, so the sender's own server returns the bounce:
+
+| Case | Reply |
+| --- | --- |
+| `dkimAligned` or `spfAligned` set | Continue |
+| `DSN` or `AUTO_REPLY` to a `0_` recipient | Continue (the collector handles these without the sender check) |
+| `fail` or `none`, not aligned | `550 5.7.26 Message not accepted: the From domain <domain> is not aligned with SPF or DKIM (DMARC)` |
+| `temperror`, not aligned | `450 4.7.0 Sender authentication temporarily unavailable, try again later` |
+| DMARC returned `false` (no `From`, or several `From` addresses) | `550 5.7.1 Message not accepted: exactly one From header is required` |
+| A DMARC or DKIM `{ error }` note, or no DMARC result at all | `450 4.7.0 Sender authentication temporarily unavailable, try again later` |
+
+Each refusal is logged with `loginfo`. The enhanced status code starts the reply text, so Haraka's `deny_includes_uuid` must stay unset.
 
 ## Header recipients
 
@@ -40,7 +69,7 @@ Besides the envelope sender (`mailFrom`), the Kafka summary carries two sender f
 
 Unlike `rcptTo`, it does not depend on how the sender's server split the delivery: Gmail sends a reply-all with one recipient per transaction, but every transaction carries the full `To`/`Cc`.
 
-These fields are additive. Consumers that don't know them ignore them.
+`headerRecipients` is additive. Consumers that don't know it ignore it.
 
 When the Kafka message schema changes (for example, replacing `isBounce` with `inboundType`/`bounceStatus`), bump `messageVersion` in `config/duotail.ini` so downstream consumers can safely branch on the schema version.
 
