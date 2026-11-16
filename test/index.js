@@ -284,75 +284,170 @@ describe('duotail', function () {
     })
   })
 
-  describe('extractDkimDomains', function () {
+  describe('extractDmarcResult', function () {
     const sig = (signingDomain, result) => ({
       signingDomain,
       status: { result },
     })
+    const spf = (domain, result) => ({ domain, status: { result } })
+    // A mailauth DMARC note for a domain with a record, alignment already computed.
+    const recorded = (result, domain, policy, dkim, spfDomain) => ({
+      status: { result },
+      domain,
+      policy,
+      alignment: { dkim: { result: dkim }, spf: { result: spfDomain } },
+    })
+    // A mailauth DMARC note for no record (none) or a failed lookup (temperror): no alignment.
+    const unrecorded = (result, domain) => ({ status: { result }, domain })
 
-    it('returns an empty list when there are no results', function () {
-      assert.deepEqual(this.plugin.extractDkimDomains(undefined), [])
-      assert.deepEqual(this.plugin.extractDkimDomains({}), [])
-      assert.deepEqual(
-        this.plugin.extractDkimDomains({ dkim: { results: [] } }),
-        [],
+    it('returns null when DMARC did not run, threw or saw several From addresses', function () {
+      assert.equal(this.plugin.extractDmarcResult(undefined), null)
+      assert.equal(this.plugin.extractDmarcResult({}), null)
+      assert.equal(
+        this.plugin.extractDmarcResult({ dmarc: { error: new Error('boom') } }),
+        null,
       )
+      assert.equal(this.plugin.extractDmarcResult({ dmarc: false }), null)
     })
 
-    it('returns an empty list when mailauth stored an error', function () {
+    it('copies a pass with DKIM alignment', function () {
       assert.deepEqual(
-        this.plugin.extractDkimDomains({ dkim: { error: new Error('boom') } }),
-        [],
-      )
-    })
-
-    it('returns the signing domain of a passing signature', function () {
-      assert.deepEqual(
-        this.plugin.extractDkimDomains({
-          dkim: { results: [sig('duotail.com', 'pass')] },
+        this.plugin.extractDmarcResult({
+          dmarc: recorded('pass', 'Company.com', 'quarantine', 'Company.com'),
         }),
-        ['duotail.com'],
+        {
+          result: 'pass',
+          domain: 'company.com',
+          policy: 'quarantine',
+          dkimAligned: 'company.com',
+          spfAligned: null,
+        },
       )
     })
 
-    it('keeps only passing signatures', function () {
+    it('copies a pass with SPF alignment only', function () {
       assert.deepEqual(
-        this.plugin.extractDkimDomains({
-          dkim: {
-            results: [
-              sig('attacker.example', 'pass'),
-              sig('duotail.com', 'fail'),
-              sig('neutral.example', 'neutral'),
-            ],
+        this.plugin.extractDmarcResult({
+          dmarc: recorded(
+            'pass',
+            'ted.com',
+            'reject',
+            undefined,
+            'bounce.ted.com',
+          ),
+        }),
+        {
+          result: 'pass',
+          domain: 'ted.com',
+          policy: 'reject',
+          dkimAligned: null,
+          spfAligned: 'bounce.ted.com',
+        },
+      )
+    })
+
+    for (const policy of ['none', 'quarantine', 'reject']) {
+      it(`copies a fail with policy ${policy}`, function () {
+        assert.deepEqual(
+          this.plugin.extractDmarcResult({
+            dkim: { results: [sig('paypal.com', 'fail')] },
+            dmarc: recorded('fail', 'paypal.com', policy),
+          }),
+          {
+            result: 'fail',
+            domain: 'paypal.com',
+            policy,
+            dkimAligned: null,
+            spfAligned: null,
           },
-        }),
-        ['attacker.example'],
-      )
-    })
+        )
+      })
+    }
 
-    it('lower-cases and de-duplicates domains', function () {
-      assert.deepEqual(
-        this.plugin.extractDkimDomains({
-          dkim: {
-            results: [
-              sig('LinkedIn.com', 'pass'),
-              sig('linkedin.com', 'pass'),
-              sig('maile.linkedin.com', 'pass'),
-            ],
-          },
-        }),
-        ['linkedin.com', 'maile.linkedin.com'],
-      )
-    })
+    for (const result of ['none', 'temperror']) {
+      describe(`${result}: alignment computed by the plugin`, function () {
+        const extract = (plugin, domain, authResults) =>
+          plugin.extractDmarcResult({
+            ...authResults,
+            dmarc: unrecorded(result, domain),
+          })
 
-    it('skips a passing result without a signing domain', function () {
-      assert.deepEqual(
-        this.plugin.extractDkimDomains({
-          dkim: { results: [{ status: { result: 'pass' } }] },
-        }),
-        [],
-      )
-    })
+        it('aligns a passing DKIM domain', function () {
+          assert.deepEqual(
+            extract(this.plugin, 'small.co', {
+              dkim: {
+                results: [sig('evil.com', 'pass'), sig('Small.co', 'pass')],
+              },
+            }),
+            {
+              result,
+              domain: 'small.co',
+              policy: null,
+              dkimAligned: 'small.co',
+              spfAligned: null,
+            },
+          )
+        })
+
+        it('ignores a DKIM domain that did not pass', function () {
+          assert.equal(
+            extract(this.plugin, 'small.co', {
+              dkim: { results: [sig('small.co', 'fail')] },
+            }).dkimAligned,
+            null,
+          )
+        })
+
+        it('aligns the envelope domain when SPF passed', function () {
+          assert.equal(
+            extract(this.plugin, 'small.co', { spf: spf('small.co', 'pass') })
+              .spfAligned,
+            'small.co',
+          )
+        })
+
+        it('does not align an unaligned SPF domain', function () {
+          assert.equal(
+            extract(this.plugin, 'small.co', { spf: spf('evil.com', 'pass') })
+              .spfAligned,
+            null,
+          )
+        })
+
+        it('does not align the envelope domain when SPF failed', function () {
+          assert.equal(
+            extract(this.plugin, 'small.co', { spf: spf('small.co', 'fail') })
+              .spfAligned,
+            null,
+          )
+        })
+
+        it('aligns sibling subdomains through the organizational domain', function () {
+          const dmarc = extract(this.plugin, 'ted.org', {
+            spf: spf('bounce.ted.org', 'pass'),
+            dkim: { results: [sig('news.ted.org', 'pass')] },
+          })
+          assert.equal(dmarc.spfAligned, 'bounce.ted.org')
+          assert.equal(dmarc.dkimAligned, 'news.ted.org')
+        })
+
+        it('aligns nothing without a passing domain', function () {
+          assert.deepEqual(
+            extract(this.plugin, 'small.co', {
+              spf: spf('evil.com', 'pass'),
+              dkim: { results: [sig('evil.com', 'pass')] },
+            }),
+            {
+              result,
+              domain: 'small.co',
+              policy: null,
+              dkimAligned: null,
+              spfAligned: null,
+            },
+          )
+        })
+      })
+    }
   })
 
   describe('parseHeaderFrom', function () {
@@ -561,7 +656,7 @@ describe('duotail', function () {
   })
 
   describe('cache_and_save', function () {
-    it('publishes headerFrom and dkimDomains in the Kafka message', function (done) {
+    it('publishes headerFrom and dmarc in the Kafka message', function (done) {
       const plugin = this.plugin
       const sent = []
       plugin.cfg = {
@@ -597,6 +692,15 @@ describe('duotail', function () {
               { signingDomain: 'Duotail.com', status: { result: 'pass' } },
             ],
           },
+          dmarc: {
+            status: { result: 'pass' },
+            domain: 'duotail.com',
+            policy: 'quarantine',
+            alignment: {
+              dkim: { result: 'Duotail.com' },
+              spf: { result: false },
+            },
+          },
         }),
       }
       transaction.rcpt_to = [{ user: 'a', host: 'duotail.com' }]
@@ -624,14 +728,325 @@ describe('duotail', function () {
             host: 'duotail.com',
             user: 'tao.dong',
           })
-          assert.deepEqual(body.dkimDomains, ['duotail.com'])
+          assert.deepEqual(body.dmarc, {
+            result: 'pass',
+            domain: 'duotail.com',
+            policy: 'quarantine',
+            dkimAligned: 'duotail.com',
+            spfAligned: null,
+          })
           assert.deepEqual(body.headerRecipients, [])
-          assert.equal(body.dkimCheck, 'pass')
+          assert.ok(!('spfCheck' in body))
+          assert.ok(!('dkimCheck' in body))
+          assert.ok(!('dkimDomains' in body))
           done()
         } catch (e) {
           done(e)
         }
       }, connection)
+    })
+  })
+
+  describe('cache_and_save rejectUnaligned', function () {
+    const { Address } = require('address-rfc2821')
+    const constants = require('haraka-constants')
+
+    const sig = (signingDomain, result) => ({
+      signingDomain,
+      status: { result },
+    })
+    const unaligned = (result, domain, policy) => ({
+      status: { result },
+      domain,
+      policy,
+      alignment: { dkim: { result: false }, spf: { result: false } },
+    })
+    // The forged PayPal email of the design: signed and SPF-passed by evil.com only.
+    const forged = (dmarc) => ({
+      spf: { domain: 'evil.com', status: { result: 'pass' } },
+      dkim: { results: [sig('evil.com', 'pass')] },
+      dmarc,
+    })
+
+    const setUp = (plugin, rejectUnaligned) => {
+      const env = { sent: [], cached: [] }
+      plugin.cfg = {
+        main: { enabled: true },
+        auth: { rejectUnaligned },
+        kafka: { topic: 'test', messageVersion: 'test', messageType: 'T' },
+        hazelcast: { cacheMapName: 'cache', emailIdCacheMapName: 'ids' },
+      }
+      plugin.kafkaProducer = {
+        send: async ({ messages }) => {
+          env.sent.push(...messages)
+        },
+      }
+      plugin.connectCacheServer = async () => {}
+      plugin.hzClient = {
+        getMap: async () => ({
+          putIfAbsent: async () => null,
+          put: async (key) => {
+            env.cached.push(key)
+          },
+        }),
+      }
+      return env
+    }
+
+    const connectionFor = (
+      authResults,
+      {
+        recipient = '1_tao.dong_bzdv@duotail.com',
+        headers = {},
+        mailFrom,
+      } = {},
+    ) => {
+      const lookup = {
+        from: 'PayPal <service@paypal.com>\n',
+        subject: 'hi\n',
+        'in-reply-to': '',
+        'message-id': '<mid-1@evil.com>\n',
+      }
+      for (const [name, value] of Object.entries(headers)) {
+        lookup[name.toLowerCase()] = value
+      }
+      const transaction = {
+        mail_from: new Address(mailFrom ?? '<bounce@evil.com>'),
+        rcpt_to: [new Address(`<${recipient}>`)],
+        body: null,
+        notes: { get: () => authResults },
+        header: {
+          get_all: (name) => {
+            const value = lookup[String(name).toLowerCase()]
+            return value === undefined ? [] : [value]
+          },
+          get(name) {
+            return this.get_all(name).join('\n')
+          },
+        },
+        message_stream: {
+          uuid: 'u',
+          pipe: (destination) => destination.end('raw message'),
+        },
+      }
+      return {
+        transaction,
+        remote: { ip: '10.0.0.1', host: 'remote' },
+        hello: { host: 'helo' },
+        local: { ip: '10.0.0.2', host: 'local' },
+        logged: [],
+        loginfo(_plugin, message) {
+          this.logged.push(message)
+        },
+        logerror: () => {},
+      }
+    }
+
+    // Runs cache_and_save and resolves with the arguments it passed to next.
+    const save = (plugin, connection) =>
+      new Promise((resolve) => {
+        plugin.cache_and_save((...args) => resolve(args), connection)
+      })
+
+    const assertRefused = (env, args, code, prefix) => {
+      assert.equal(args[0], code)
+      assert.ok(
+        args[1].startsWith(prefix),
+        `"${args[1]}" does not start with "${prefix}"`,
+      )
+      assert.equal(env.sent.length, 0)
+      assert.equal(env.cached.length, 0)
+    }
+
+    it('off: caches and publishes an unaligned email', async function () {
+      const env = setUp(this.plugin, false)
+      const args = await save(
+        this.plugin,
+        connectionFor(forged(unaligned('fail', 'paypal.com', 'reject'))),
+      )
+      assert.deepEqual(args, [])
+      assert.equal(env.sent.length, 1)
+      assert.equal(env.cached.length, 1)
+    })
+
+    it('off when the auth section is missing', async function () {
+      const env = setUp(this.plugin, false)
+      delete this.plugin.cfg.auth
+      const args = await save(
+        this.plugin,
+        connectionFor(forged(unaligned('fail', 'paypal.com', 'reject'))),
+      )
+      assert.deepEqual(args, [])
+      assert.equal(env.sent.length, 1)
+    })
+
+    it('on: continues when DKIM is aligned', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor({
+          dkim: { results: [sig('company.com', 'pass')] },
+          dmarc: {
+            status: { result: 'pass' },
+            domain: 'company.com',
+            policy: 'quarantine',
+            alignment: { dkim: { result: 'company.com' }, spf: {} },
+          },
+        }),
+      )
+      assert.deepEqual(args, [])
+      assert.equal(env.sent.length, 1)
+    })
+
+    it('on: continues when only SPF is aligned (computed for none)', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor({
+          spf: { domain: 'bounce.ted.org', status: { result: 'pass' } },
+          dmarc: { status: { result: 'none' }, domain: 'ted.org' },
+        }),
+      )
+      assert.deepEqual(args, [])
+      assert.equal(env.sent.length, 1)
+    })
+
+    it('on: refuses a fail with 550 5.7.26 naming the domain', async function () {
+      const env = setUp(this.plugin, true)
+      const connection = connectionFor(
+        forged(unaligned('fail', 'paypal.com', 'reject')),
+      )
+      const args = await save(this.plugin, connection)
+      assertRefused(env, args, constants.deny, '5.7.26 ')
+      assert.equal(
+        args[1],
+        '5.7.26 Message not accepted: the From domain paypal.com is not aligned with SPF or DKIM (DMARC)',
+      )
+      assert.equal(connection.logged.length, 1)
+      assert.ok(connection.logged[0].includes('550 5.7.26'))
+      assert.ok(connection.logged[0].includes('bounce@evil.com'))
+      assert.ok(connection.logged[0].includes('service@paypal.com'))
+      assert.ok(connection.logged[0].includes('1_tao.dong_bzdv@duotail.com'))
+      assert.ok(connection.logged[0].includes('"result":"fail"'))
+    })
+
+    it('on: refuses an unaligned none with 550 5.7.26', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor(
+          forged({ status: { result: 'none' }, domain: 'small.co' }),
+          { headers: { From: 'ceo@small.co\n' } },
+        ),
+      )
+      assertRefused(env, args, constants.deny, '5.7.26 ')
+      assert.ok(args[1].includes('small.co'))
+    })
+
+    it('on: refuses an unaligned temperror with 450 4.7.0', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor(
+          forged({ status: { result: 'temperror' }, domain: 'corp.com' }),
+        ),
+      )
+      assertRefused(env, args, constants.denysoft, '4.7.0 ')
+    })
+
+    it('on: refuses several From addresses (dmarc false) with 550 5.7.1', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(this.plugin, connectionFor(forged(false)))
+      assertRefused(env, args, constants.deny, '5.7.1 ')
+      assert.equal(
+        args[1],
+        '5.7.1 Message not accepted: exactly one From header is required',
+      )
+    })
+
+    it('on: refuses a DMARC error with 450 4.7.0', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor(forged({ error: new Error('boom') })),
+      )
+      assertRefused(env, args, constants.denysoft, '4.7.0 ')
+    })
+
+    it('on: refuses a DKIM error with 450 4.7.0', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor({ dkim: { error: new Error('boom') } }),
+      )
+      assertRefused(env, args, constants.denysoft, '4.7.0 ')
+    })
+
+    it('on: refuses missing mailauth notes with 450 4.7.0', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(this.plugin, connectionFor(undefined))
+      assertRefused(env, args, constants.denysoft, '4.7.0 ')
+    })
+
+    it('on: refuses a missing DMARC note with 450 4.7.0', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(this.plugin, connectionFor(forged(undefined)))
+      assertRefused(env, args, constants.denysoft, '4.7.0 ')
+    })
+
+    it('on: continues for a DSN to a 0_ recipient, even when unaligned', async function () {
+      const env = setUp(this.plugin, true)
+      this.plugin.classifyInbound = () => ({
+        inboundType: 'DSN',
+        bounceStatus: '5.1.1',
+      })
+      const args = await save(
+        this.plugin,
+        connectionFor(
+          forged({ status: { result: 'none' }, domain: 'small.co' }),
+          {
+            recipient: '0_abc@duotail.com',
+            mailFrom: '<>',
+          },
+        ),
+      )
+      assert.deepEqual(args, [])
+      assert.equal(env.sent.length, 1)
+    })
+
+    it('on: continues for an auto-reply to a 0_ recipient, even when unaligned', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor(forged(unaligned('fail', 'paypal.com', 'reject')), {
+          recipient: '0_abc@duotail.com',
+          headers: { 'Auto-Submitted': 'auto-replied\n' },
+        }),
+      )
+      assert.deepEqual(args, [])
+      assert.equal(env.sent.length, 1)
+    })
+
+    it('on: refuses an unaligned auto-reply to a masked recipient', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor(forged(unaligned('fail', 'paypal.com', 'reject')), {
+          headers: { 'Auto-Submitted': 'auto-replied\n' },
+        }),
+      )
+      assertRefused(env, args, constants.deny, '5.7.26 ')
+    })
+
+    it('on: refuses an unaligned normal email to a 0_ recipient', async function () {
+      const env = setUp(this.plugin, true)
+      const args = await save(
+        this.plugin,
+        connectionFor(forged(unaligned('fail', 'paypal.com', 'reject')), {
+          recipient: '0_abc@duotail.com',
+        }),
+      )
+      assertRefused(env, args, constants.deny, '5.7.26 ')
     })
   })
 

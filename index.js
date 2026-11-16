@@ -1,6 +1,8 @@
 'use strict'
 
 const { Address } = require('address-rfc2821')
+// Not a documented entry point: re-run the tests on every mailauth upgrade.
+const { getAlignment } = require('mailauth/lib/tools')
 const constants = require('haraka-constants')
 const parseAddresses = require('email-addresses')
 const { Kafka, logLevel } = require('kafkajs')
@@ -32,15 +34,30 @@ exports.cache_and_save = function (next, connection) {
 
   const authResults = connection.transaction.notes.get('mailauth')
 
-  const spfCheck = plugin.etractSpfResult(authResults)
-  const dkimCheck = plugin.extractDkimResult(authResults)
-  const dkimDomains = plugin.extractDkimDomains(authResults)
+  const dmarc = plugin.extractDmarcResult(authResults)
 
   if (plugin.cfg.main.enabled) {
     const { transaction, remote, hello } = connection
     const { inboundType, bounceStatus } = plugin.classifyInbound(transaction)
     const mailFrom = transaction.mail_from
     const rcptTo = transaction.rcpt_to
+
+    if (plugin.cfg.auth?.rejectUnaligned) {
+      const refusal = plugin.authRefusal(
+        authResults,
+        dmarc,
+        inboundType,
+        rcptTo,
+      )
+      if (refusal) {
+        connection.loginfo(
+          plugin,
+          `Refused unaligned email (${refusal.reply} ${refusal.message}): mailFrom=${mailFrom}, headerFrom=${transaction.header.get('From').replace(/\n+$/, '')}, rcptTo=${plugin.recipientAddresses(rcptTo)}, dmarc=${JSON.stringify(dmarc)}`,
+        )
+        return next(refusal.code, refusal.message)
+      }
+    }
+
     const remoteIp = remote.ip
     const remoteHost = remote.host
     const heloHost = hello?.host
@@ -67,14 +84,12 @@ exports.cache_and_save = function (next, connection) {
       subject,
       senderName,
       inReplyTo,
-      spfCheck,
-      dkimCheck,
       inboundType,
       bounceStatus,
       incomingId,
       headerFrom,
-      dkimDomains,
       headerRecipients,
+      dmarc,
     }
 
     const buildKafkaMessage = (recipients) => ({
@@ -249,26 +264,90 @@ exports.pipeToCache = function (messageStream, cacheStream) {
   })
 }
 
-exports.etractSpfResult = function (authResults) {
-  return authResults?.spf?.status?.result ?? 'unknown'
-}
-
-exports.extractDkimResult = function (authResults) {
-  var results = authResults?.dkim?.results ?? []
-  return results.some((item) => item?.status?.result === 'pass')
-    ? 'pass'
-    : 'fail'
-}
-
-// The signing domains (d=) of every DKIM signature that verified, lower-cased and
-// de-duplicated. Downstream uses them to tell which domain vouched for the message;
-// dkimCheck alone only says that some signature passed.
-exports.extractDkimDomains = function (authResults) {
-  const results = authResults?.dkim?.results ?? []
-  const domains = results
+// The passing DKIM signing domains, as haraka-plugin-mailauth passes them to its DMARC step.
+exports.passingDkimDomains = function (authResults) {
+  return (authResults?.dkim?.results ?? [])
     .filter((item) => item?.status?.result === 'pass' && item?.signingDomain)
-    .map((item) => String(item.signingDomain).trim().toLowerCase())
-  return [...new Set(domains)]
+    .map((item) => item.signingDomain)
+}
+
+// The envelope MAIL FROM domain when SPF passed, as haraka-plugin-mailauth passes it to its DMARC
+// step.
+exports.passingSpfDomains = function (authResults) {
+  const spf = authResults?.spf
+  return spf?.status?.result === 'pass' && spf?.domain ? [spf.domain] : []
+}
+
+// { result, domain, policy, dkimAligned, spfAligned } from mailauth's DMARC step, or null when it did
+// not run, threw, or saw several From addresses. dkimAligned / spfAligned are the passing domains that
+// align with the header From, or null.
+exports.extractDmarcResult = function (authResults) {
+  const dmarc = authResults?.dmarc
+  if (!dmarc?.status?.result) return null
+  const result = String(dmarc.status.result).toLowerCase()
+  const domain = dmarc.domain ? String(dmarc.domain).toLowerCase() : null
+
+  let dkimAligned = dmarc.alignment?.dkim?.result || null
+  let spfAligned = dmarc.alignment?.spf?.result || null
+  if ((result === 'none' || result === 'temperror') && domain) {
+    // mailauth returns before alignment when there is no record or the lookup failed. No record means
+    // no adkim/aspf, so relaxed alignment is the DMARC default.
+    dkimAligned =
+      getAlignment(domain, exports.passingDkimDomains(authResults), false)
+        ?.domain || null
+    spfAligned =
+      getAlignment(domain, exports.passingSpfDomains(authResults), false)
+        ?.domain || null
+  }
+
+  return {
+    result,
+    domain,
+    policy: dmarc.policy ? String(dmarc.policy).toLowerCase() : null,
+    dkimAligned: dkimAligned ? String(dkimAligned).toLowerCase() : null,
+    spfAligned: spfAligned ? String(spfAligned).toLowerCase() : null,
+  }
+}
+
+exports.TEMPORARY_AUTH_FAILURE_MESSAGE =
+  '4.7.0 Sender authentication temporarily unavailable, try again later'
+
+// The SMTP refusal for mail whose header From is not aligned with SPF or DKIM, as { code, reply,
+// message } (reply is the code queue_respond answers with),
+// or null to continue. A strict subset of the collector's gate: only mail with no aligned domain at
+// all is refused, and a DSN or auto-reply to a 0_ return path is left to the collector, which handles
+// it without the gate. The enhanced status code starts the message, since queue_respond stringifies
+// it and a haraka-dsn object would not survive.
+exports.authRefusal = function (authResults, dmarc, inboundType, rcptTo) {
+  if (dmarc?.dkimAligned || dmarc?.spfAligned) return null
+  if (
+    (inboundType === 'DSN' || inboundType === 'AUTO_REPLY') &&
+    (rcptTo ?? []).some((rcpt) => String(rcpt?.user ?? '').startsWith('0_'))
+  ) {
+    return null
+  }
+  // verifyDmarc returns false unless the message has exactly one From address.
+  if (authResults?.dmarc === false) {
+    return {
+      code: constants.deny,
+      reply: 550,
+      message:
+        '5.7.1 Message not accepted: exactly one From header is required',
+    }
+  }
+  // An error note, or no DMARC result at all (mailauth not loaded or skipped), is our own failure.
+  if (!dmarc || dmarc.result === 'temperror') {
+    return {
+      code: constants.denysoft,
+      reply: 450,
+      message: exports.TEMPORARY_AUTH_FAILURE_MESSAGE,
+    }
+  }
+  return {
+    code: constants.deny,
+    reply: 550,
+    message: `5.7.26 Message not accepted: the From domain ${dmarc.domain} is not aligned with SPF or DKIM (DMARC)`,
+  }
 }
 
 // The first mailbox of the From header, built with address-rfc2821 like Haraka's
@@ -571,6 +650,7 @@ exports.load_duotail_ini = function () {
     {
       booleans: [
         '+enabled', // this.cfg.main.enabled=true
+        '-auth.rejectUnaligned', // this.cfg.auth.rejectUnaligned=false
       ],
     },
     () => {
